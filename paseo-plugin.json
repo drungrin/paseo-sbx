@@ -1,0 +1,8 @@
+{
+  "id": "paseo-sbx",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.12.0"
+  },
+  "name": "Sandboxes (sbx)"
+}
