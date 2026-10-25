@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sandboxSettingsSchema } from "../shared/settings";
 import { pluginPaths } from "../server/paths";
-import { buildSpec } from "../server/spec-builder";
+import { buildSpec, claudeProjectDirName, copyHostTranscripts, prepareClaudeConfigDir } from "../server/spec-builder";
 
 const GiB = 1024 ** 3;
 let root: string;
@@ -98,3 +98,76 @@ describe("buildSpec", () => {
     expect(spec.memory).toBe("6144m");
   });
 });
+
+describe("buildSpec bindings and validation", () => {
+  it("reuses an agent's binding even after the isolation mode changed", async () => {
+    const { home, repo, env, paths } = setup();
+    const binding = { key: "workspace:wks_old", name: "paseo-repo-0badc0de", claudeConfigDir: join(root, "old-config") };
+    const settings = sandboxSettingsSchema.parse({ isolation: "directory" });
+    const { spec } = await buildSpec({ settings, workspaceId: "wks_old", cwd: repo, paths, env, home, binding });
+    expect(spec.key).toBe(binding.key);
+    expect(spec.name).toBe(binding.name);
+    expect(spec.claudeConfigDir).toBe(binding.claudeConfigDir);
+    expect(spec.workspace).toBe(repo);
+  });
+
+  it("refuses to forward variables the sbx client reserves", async () => {
+    const { home, repo, env, paths } = setup();
+    const settings = sandboxSettingsSchema.parse({ envNames: ["PATH", "SBX_TOKEN", "DOCKER_HOST", "OK"] });
+    const { spec, rejectedEnv } = await buildSpec({
+      settings,
+      workspaceId: null,
+      cwd: repo,
+      paths,
+      env: { ...env, PATH: "/x", SBX_TOKEN: "t", DOCKER_HOST: "d", OK: "1" },
+      home,
+    });
+    expect(spec.env).toEqual({ OK: "1" });
+    expect(rejectedEnv).toEqual(["PATH", "SBX_TOKEN", "DOCKER_HOST"]);
+  });
+
+  it("keys a non-git directory by its canonical path", async () => {
+    const { home, env, paths } = setup();
+    const plain = join(root, "plain");
+    mkdirSync(plain);
+    const settings = sandboxSettingsSchema.parse({ isolation: "directory", claudeShared: [] });
+    const a = await buildSpec({ settings, workspaceId: null, cwd: `${plain}/`, paths, env, home });
+    const b = await buildSpec({ settings, workspaceId: null, cwd: plain, paths, env, home });
+    expect(a.spec.workspace).toBe(plain);
+    expect(a.spec.name).toBe(b.spec.name);
+  });
+});
+
+describe("Claude config dir", () => {
+  it("drops links to items no longer shared and keeps what Claude wrote", () => {
+    const { hostClaude } = setup();
+    mkdirSync(join(hostClaude, "agents"));
+    const dir = join(root, "sandbox-config");
+    prepareClaudeConfigDir(dir, hostClaude, ["settings.json", "agents"]);
+    writeFileSync(join(dir, ".claude.json"), "{}");
+    prepareClaudeConfigDir(dir, hostClaude, ["settings.json"]);
+    expect(existsSync(join(dir, "agents"))).toBe(false);
+    expect(lstatSync(join(dir, "settings.json")).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(dir, ".claude.json"))).toBe(true);
+  });
+
+  it("copies the project's host transcripts for an import without overwriting", () => {
+    const { hostClaude, repo } = setup();
+    const name = claudeProjectDirName(repo);
+    mkdirSync(join(hostClaude, "projects", name), { recursive: true });
+    writeFileSync(join(hostClaude, "projects", name, "s1.jsonl"), "host");
+    const dir = join(root, "sandbox-config");
+    mkdirSync(join(dir, "projects", name), { recursive: true });
+    writeFileSync(join(dir, "projects", name, "s2.jsonl"), "sandbox");
+    copyHostTranscripts(hostClaude, repo, dir);
+    copyHostTranscripts(hostClaude, repo, dir);
+    expect(readFileSync(join(dir, "projects", name, "s1.jsonl"), "utf8")).toBe("host");
+    expect(readFileSync(join(dir, "projects", name, "s2.jsonl"), "utf8")).toBe("sandbox");
+  });
+
+  it("encodes project paths like Claude Code", () => {
+    expect(claudeProjectDirName("/home/u/my.repo")).toBe("-home-u-my-repo");
+    expect(claudeProjectDirName(`/${"a".repeat(300)}`)).toMatch(/^-a{199}-[0-9a-z]+$/);
+  });
+});
+

@@ -94,12 +94,19 @@ export async function listSandboxes(paths: PluginPaths): Promise<SandboxSummary[
   }));
 }
 
+/** RPC input names must be ones this plugin generates; they also become file names. */
+export function assertSandboxName(name: string): void {
+  if (!/^paseo-[a-z0-9-]+-[0-9a-f]{8}$/.test(name)) throw new Error(`not a paseo-sbx sandbox: ${name}`);
+}
+
 export async function stopSandbox(paths: PluginPaths, name: string): Promise<void> {
+  assertSandboxName(name);
   await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
 }
 
 /** Removes the sandbox and the wrapper's record of the policies applied to it. */
 export async function removeSandbox(paths: PluginPaths, name: string): Promise<void> {
+  assertSandboxName(name);
   await runSbxOk(paths, ["rm", "-f", name], `sbx rm ${name}`);
   rmSync(join(paths.stateDir, `${name}.json`), { force: true });
 }
@@ -107,7 +114,7 @@ export async function removeSandbox(paths: PluginPaths, name: string): Promise<v
 /** Creates the sandbox and applies its policy through the wrapper's ensure mode. */
 export function prepareSandbox(paths: PluginPaths, spec: SandboxSpec): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [paths.wrapper, "--paseo-sbx-ensure"], {
+    const child = spawn(paths.launcher, ["--paseo-sbx-ensure"], {
       cwd: spec.workspace,
       env: { ...process.env, [SPEC_ENV]: JSON.stringify(spec) },
       stdio: ["ignore", "ignore", "pipe"],

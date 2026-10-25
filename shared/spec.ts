@@ -34,6 +34,25 @@ export interface SandboxIdentity {
   name: string;
 }
 
+/** Sandbox an agent was first opened in; later opens reuse it even if settings changed. */
+export interface SandboxBinding extends SandboxIdentity {
+  claudeConfigDir: string;
+}
+
+const RESERVED_ENV = new Set([
+  "PATH",
+  "HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+  "XDG_CONFIG_HOME",
+  "DBUS_SESSION_BUS_ADDRESS",
+]);
+
+/** Variables the host-side sbx client reads itself; forwarding them would redirect it. */
+export function isReservedEnvName(name: string): boolean {
+  return RESERVED_ENV.has(name) || name.startsWith("SBX_") || name.startsWith("DOCKER_");
+}
+
 export function sandboxKey(
   isolation: IsolationMode,
   workspaceId: string | null,

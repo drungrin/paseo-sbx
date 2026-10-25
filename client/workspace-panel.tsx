@@ -100,7 +100,15 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
         {action.error ? <Text style={styles.error}>{errorMessage(action.error)}</Text> : null}
       </Section>
 
-      {data ? <MemoryOverride sandboxKey={data.key} overrideGiB={data.overrideMemoryGiB} styles={styles} /> : null}
+      {data ? (
+        // Keyed so a different sandbox or a saved value starts from a fresh draft.
+        <MemoryOverride
+          key={`${data.key}:${data.overrideMemoryGiB ?? ""}`}
+          sandboxKey={data.key}
+          overrideGiB={data.overrideMemoryGiB}
+          styles={styles}
+        />
+      ) : null}
 
       {data ? (
         <Section styles={styles} title="Mounts">

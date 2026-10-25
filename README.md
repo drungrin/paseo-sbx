@@ -23,24 +23,31 @@ Then open **Sandboxes** in the sidebar and press **Configure** to register the `
 | Piece | Where | Role |
 | --- | --- | --- |
 | Plugin server | Paseo daemon | Settings, the `agent.session_open` hook that builds each session's sandbox spec, the optional `agent.create` hook that routes `claude` to `claude-sbx`, RPCs for the UI |
-| Wrapper (`paseo-sbx-claude.cjs`) | Host, spawned by Paseo as the provider command | Creates the sandbox and its policy, starts the loopback relay, runs the host's Claude Code inside the VM |
+| Launcher (`paseo-sbx-claude`) | Host, the registered provider command | Runs the wrapper with the daemon's own Node (in Node mode when the daemon runs inside Electron) |
+| Wrapper (`paseo-sbx-claude.cjs`) | Host | Creates the sandbox, reconciles its network policy, starts the loopback relay, runs the host's Claude Code inside the VM |
 | `guest-supervisor.py` | Sandbox | Feeds Claude's stdin and stops its process tree when the session ends |
 | `loopback-forward.py` | Sandbox | Relays guest `127.0.0.1:<port>` to the host's loopback |
 
-The server bundle cannot read files from the plugin directory, so the plugin writes the wrapper and the guest helpers to `~/.local/state/paseo-sbx/bin` on startup and registers the provider with `config.patch`.
+The server bundle cannot read files from the plugin directory, so the plugin writes the launcher, the wrapper and the guest helpers to `~/.local/state/paseo-sbx/bin` on startup and registers the provider with `config.patch`, keeping any label, env or model fields you customized on that entry.
 
 State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 
 - `sbx/`: the Paseo-only `sbx` instance (`XDG_STATE_HOME` for `sbx`). Inspect it with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx ls`.
 - `claude/<sandbox>/`: per-sandbox Claude config directories. Paseo reads transcripts here for history and rewind.
-- `sandboxes/<sandbox>.json`: network rules already applied to each sandbox.
+- `sandboxes/<sandbox>.json`: network rules applied to each sandbox. Removing a rule from the settings revokes it on the next launch.
+- `agents/<agent>.json`: the sandbox each agent first opened in. Resume, refresh and history reuse it, so changing the isolation mode does not move existing agents or their transcripts.
 
 ### Design decisions
 
 - **Fail closed.** The wrapper refuses to start a session without the spec the plugin injects. With the plugin disabled, `claude-sbx` agents fail with a clear error instead of running on the host. Only Paseo's model catalogue probe and `--version` run on the host.
 - **Teardown inside the guest.** The `sbx exec` client can exit while Claude is still inside a tool call, and the daemon tree-kills the wrapper and anything it spawns during shutdown. The guest supervisor stops Claude's process tree once its stdin reaches EOF, which happens however the session ends on the host.
 - **Paseo-only `sbx`.** Paseo's sandboxes live in their own `sbx` instance, started by the daemon on demand. Restarting Paseo stops them; your own sandboxes are unaffected.
-- **Secrets stay off command lines.** Forwarded values travel in the `sbx` client's environment; only variable names appear in `sbx exec` arguments.
+- **Secrets stay off command lines.** Forwarded values travel in the `sbx` client's environment; only variable names appear in `sbx exec` arguments. Variables the `sbx` client reads itself (`PATH`, `HOME`, `XDG_*`, `SBX_*`, `DOCKER_*`, ...) are never forwarded.
+- **Invalid settings fail instead of defaulting.** Falling back to defaults could silently turn routing off or reopen the network policy. The plugin keeps the last valid settings it read; without any, `claude-sbx` sessions and routed agent creation fail with a message pointing to the settings screen.
+
+### What reaches the guest environment
+
+Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_` or `DISABLE_`, plus `API_TIMEOUT_MS`, `MAX_THINKING_TOKENS`, `LANG` and `TZ`, from the daemon environment. Anything else your tools need (`GH_TOKEN`, license keys, cloud credentials) goes under **Forwarded variables**, with values in the variables file. Importing a host Claude session into `claude-sbx` copies that project's transcripts into the sandbox's config directory first.
 
 ## Working inside a sandbox
 

@@ -1,7 +1,7 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 
 type Theme = PluginHostProps["theme"];
 
@@ -32,7 +32,11 @@ export function useStyles(theme: Theme, compact: boolean) {
       label: { color: theme.colors.foreground, fontSize: 13 },
       value: { color: theme.colors.foregroundMuted, fontSize: 13, flexShrink: 1, textAlign: "right" as const },
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      mono: { color: theme.colors.foreground, fontSize: 12, fontFamily: "monospace" },
+      mono: {
+        color: theme.colors.foreground,
+        fontSize: 12,
+        fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }),
+      },
       error: { color: theme.colors.statusDanger, fontSize: 12 },
       actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8 },
       button: {

@@ -1,7 +1,13 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { FORWARDER_SOURCE, SUPERVISOR_SOURCE, WAIT_PORTS_SOURCE, WRAPPER_SOURCE } from "./wrapper-source";
+import {
+  FORWARDER_SOURCE,
+  SUPERVISOR_SOURCE,
+  WAIT_PORTS_SOURCE,
+  WRAPPER_SOURCE,
+  launcherSource,
+} from "./wrapper-source";
 
 export interface PluginPaths {
   root: string;
@@ -10,7 +16,11 @@ export interface PluginPaths {
   stateDir: string;
   locksDir: string;
   binDir: string;
+  /** Provider command: a shell launcher that runs the wrapper with the daemon's node. */
+  launcher: string;
   wrapper: string;
+  /** Per-agent sandbox bindings, so resume and history keep the sandbox they started in. */
+  bindingsDir: string;
   claudeConfigs: string;
   defaultEnvFile: string;
   hostClaudeDir: string;
@@ -25,24 +35,30 @@ export function pluginPaths(env: NodeJS.ProcessEnv = process.env, home = homedir
     stateDir: join(root, "sandboxes"),
     locksDir: join(root, "locks"),
     binDir,
+    launcher: join(binDir, "paseo-sbx-claude"),
     wrapper: join(binDir, "paseo-sbx-claude.cjs"),
+    bindingsDir: join(root, "agents"),
     claudeConfigs: join(root, "claude"),
     defaultEnvFile: join(env.XDG_CONFIG_HOME || join(home, ".config"), "paseo-sbx", "env"),
     hostClaudeDir: env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
   };
 }
 
-const BIN_FILES = [
-  { name: "paseo-sbx-claude.cjs", source: WRAPPER_SOURCE, mode: 0o755 },
-  { name: "loopback-forward.py", source: FORWARDER_SOURCE, mode: 0o644 },
-  { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },
-  { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
-];
+function binFiles(paths: PluginPaths) {
+  return [
+    // The daemon's own node runs the wrapper; it changes when the daemon is upgraded.
+    { name: "paseo-sbx-claude", source: launcherSource(process.execPath, paths.wrapper), mode: 0o755 },
+    { name: "paseo-sbx-claude.cjs", source: WRAPPER_SOURCE, mode: 0o644 },
+    { name: "loopback-forward.py", source: FORWARDER_SOURCE, mode: 0o644 },
+    { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },
+    { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
+  ];
+}
 
-/** Writes the wrapper and its guest helpers, leaving unchanged files untouched. */
+/** Writes the launcher, the wrapper and its guest helpers, leaving unchanged files untouched. */
 export function installBinFiles(paths: PluginPaths): void {
   mkdirSync(paths.binDir, { recursive: true });
-  for (const file of BIN_FILES) {
+  for (const file of binFiles(paths)) {
     const target = join(paths.binDir, file.name);
     let current: string | null = null;
     try {

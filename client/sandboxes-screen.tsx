@@ -70,7 +70,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
         {ensureProvider.error ? <Text style={styles.error}>{errorMessage(ensureProvider.error)}</Text> : null}
         <View style={styles.actions}>
           <Button styles={styles} label="Settings" onPress={openSettings} />
-          <Button styles={styles} label="Refresh" onPress={() => void status.refetch()} />
+          <Button styles={styles} label="Refresh" onPress={() => void Promise.all([status.refetch(), sandboxes.refetch()])} />
         </View>
       </Section>
 

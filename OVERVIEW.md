@@ -19,7 +19,7 @@ Open **Sandboxes** in the sidebar and press **Configure** to register the provid
 - **One sandbox per**: workspace (default) or directory. Workspaces that share a directory get separate VMs in workspace mode.
 - **Memory**: a percentage of host RAM per sandbox (10% by default) with a minimum, plus a per-workspace override in the workspace's **Sandbox** panel.
 - **Extra mounts**: toolchains and shared tool state your agents need, such as a version manager's install directory (`:ro` for read-only).
-- **Forwarded variables**: values your agents get from your shell profile on the host, read from a dotenv file (`~/.config/paseo-sbx/env` by default).
+- **Forwarded variables**: values your agents get from your shell profile on the host, read from a dotenv file (`~/.config/paseo-sbx/env` by default). Only Claude and Paseo variables reach the sandbox automatically; tokens such as `GH_TOKEN` must be listed here.
 - **Allowed destinations** and **Extra host ports**: the sandbox network policy and additional host loopback ports to relay.
 - **Excluded paths**: workspaces that keep running Claude on the host when routing is on.
 
@@ -28,7 +28,7 @@ The workspace **Sandbox** panel shows the sandbox, its mounts and variables, and
 ## Limits
 
 - Terminals, workspace scripts and services from `paseo.json` still run on the host.
-- Mounts, memory and CPUs are fixed when a sandbox is created; remove it from the panel to recreate it.
+- Mounts, memory and CPUs are fixed when a sandbox is created; remove it from the panel to recreate it. Existing agents keep the sandbox they started in when you change the isolation mode.
 - Stopping a sandbox is abrupt for what runs inside it: databases go through crash recovery on the next start.
 - Each open workspace keeps a VM running, about 1 GB of memory at idle plus its workload, and each VM has its own image cache on disk.
 - Hooks or plugins in your Claude settings that call host-only binaries fail inside the sandbox.

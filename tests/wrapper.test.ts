@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
-import { SUPERVISOR_SOURCE, WRAPPER_SOURCE } from "../server/wrapper-source";
+import { SUPERVISOR_SOURCE, WRAPPER_SOURCE, launcherSource } from "../server/wrapper-source";
 
 // A fake sbx that keeps sandboxes in a JSON file, logs every call, and runs `exec` commands
 // locally with a VM-like environment: PATH plus the `-e NAME` variables only.
@@ -19,6 +19,7 @@ const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
 if (args[0] === 'ls') {
   process.stdout.write(JSON.stringify(state.sandboxes.map((name) => ({ name, status: 'running' }))));
 } else if (args[0] === 'create') {
+  if (process.env.FAKE_SBX_FAIL_CREATE) { process.stderr.write('create refused'); process.exit(3); }
   state.sandboxes.push(args[args.indexOf('--name') + 1]);
   save();
 } else if (args[0] === 'policy') {
@@ -55,7 +56,11 @@ if (args[0] === 'ls') {
 // stop it.
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require('node:fs');
-if (process.env.CLAUDE_FAKE_BUSY) {
+if (process.env.CLAUDE_FAKE_COOPERATIVE) {
+  // Ends its session on stdin EOF but leaves a detached tool that ignores SIGTERM.
+  require('node:child_process').spawn('sh', ['-c', 'trap "" TERM; sleep 300'], { stdio: 'ignore', detached: true });
+  fs.readFileSync(0);
+} else if (process.env.CLAUDE_FAKE_BUSY) {
   require('node:child_process').spawn('sleep', ['300'], { stdio: 'ignore', detached: true });
   setInterval(() => {}, 1000);
 } else {
@@ -335,6 +340,106 @@ function exited(child: ChildProcess): Promise<void> {
   return new Promise((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) resolve();
     else child.on("exit", () => resolve());
+  });
+}
+
+describe("wrapper hardening", () => {
+  it("revokes network rules the spec no longer lists", () => {
+    const first = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(spec()) } });
+    expect(first.status).toBe(0);
+    const second = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(spec({ networkAllow: ["example.com"] })) },
+    });
+    expect(second.status).toBe(0);
+    expect(second.calls.filter((call) => call.args[0] === "policy").map((call) => call.args.slice(1))).toEqual([
+      ["allow", "network", "--sandbox", spec().name, "example.com"],
+      ["rm", "network", "--sandbox", spec().name, "--resource", "**"],
+    ]);
+  });
+
+  it("relays loopback ports named by forwarded variables", () => {
+    const sandbox = spec({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:9999/" } });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(0);
+    expect(result.calls.find((call) => call.args[0] === "policy")?.args.at(-1)).toBe("**,localhost:9999");
+  });
+
+  it("never lets forwarded variables redirect the host-side sbx client", () => {
+    const sandbox = spec({ env: { XDG_STATE_HOME: "/elsewhere", SBX_TOKEN: "x", GOOD: "1" } });
+    const result = run([], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: "{}\n" });
+    expect(result.status).toBe(0);
+    expect(result.calls.every((call) => call.stateHome === sandbox.stateHome)).toBe(true);
+    const guest = JSON.parse(result.stdout);
+    expect(guest.env.GOOD).toBe("1");
+    expect(guest.env.XDG_STATE_HOME).toBeUndefined();
+    expect(guest.env.SBX_TOKEN).toBeUndefined();
+    expect(result.stderr).toContain("not forwarding reserved variable XDG_STATE_HOME");
+  });
+
+  it("releases the sandbox lock when a step fails", () => {
+    const sandbox = spec();
+    const failed = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(sandbox), FAKE_SBX_FAIL_CREATE: "1" },
+    });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain("create refused");
+    expect(existsSync(join(sandbox.locksDir, sandbox.name))).toBe(false);
+    const started = Date.now();
+    expect(run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } }).status).toBe(0);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("takes over a lock whose owner died", () => {
+    const sandbox = spec();
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+    mkdirSync(join(sandbox.locksDir, sandbox.name), { recursive: true });
+    writeFileSync(join(sandbox.locksDir, sandbox.name, "owner"), dead.stdout);
+    const started = Date.now();
+    expect(run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } }).status).toBe(0);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("kills tools that ignore SIGTERM after Claude ends its session", async () => {
+    const session = startSession({ CLAUDE_FAKE_BUSY: "", CLAUDE_FAKE_COOPERATIVE: "1" });
+    const tools = await waitForTools();
+    session.stdin?.end();
+    await exited(session);
+    await waitFor(() => tools.every((pid) => !alive(pid)));
+  });
+
+  it("launches the wrapper through the shell launcher with arguments intact", () => {
+    const dir = join(root, "it's a dir");
+    mkdirSync(dir);
+    const script = join(dir, "echo-args.cjs");
+    writeFileSync(script, "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), electron: process.env.ELECTRON_RUN_AS_NODE }));");
+    const launcher = join(dir, "launcher");
+    writeFileSync(launcher, launcherSource(process.execPath, script));
+    chmodSync(launcher, 0o755);
+    const result = spawnSync(launcher, ["a b", "c'd", ""], { encoding: "utf8" });
+    expect(JSON.parse(result.stdout)).toEqual({ args: ["a b", "c'd", ""], electron: "1" });
+  });
+});
+
+// Descendants of the fake claude that run `sleep 300`, with their shells.
+async function waitForTools(): Promise<number[]> {
+  return waitFor(() => {
+    const rows = execFileSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8" })
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((row) => row.length >= 3);
+    const claude = rows.find((row) => row.slice(2).join(" ").includes(`${bin}/claude`) && !row.join(" ").includes("guest-supervisor"));
+    if (!claude) return null;
+    const tree: number[] = [];
+    const pending = [claude[0]];
+    while (pending.length > 0) {
+      const parent = pending.pop();
+      for (const row of rows.filter((candidate) => candidate[1] === parent)) {
+        tree.push(Number(row[0]));
+        pending.push(row[0]);
+      }
+    }
+    const hasSleep = rows.some((row) => tree.includes(Number(row[0])) && row[2] === "sleep");
+    return hasSleep ? tree : null;
   });
 }
 
