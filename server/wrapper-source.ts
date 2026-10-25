@@ -63,6 +63,11 @@ function isCatalogProbe() {
   );
 }
 
+// Paseo's provider diagnostic asks the command for its version.
+function isInfoCommand() {
+  return args.length === 1 && ['--version', '-v', '--help', '-h'].includes(args[0]);
+}
+
 function sbxEnv(spec) {
   return Object.assign({}, process.env, { XDG_STATE_HOME: spec.stateHome });
 }
@@ -238,7 +243,7 @@ function relaySignals(onSignal) {
     process.on(signal, function () {
       if (relayed) return;
       relayed = true;
-      onSignal();
+      onSignal(signal);
     });
   }
 }
@@ -255,8 +260,12 @@ function runOnHost(claude) {
 
 // Values travel in the sbx client's environment and only the names on its command line,
 // so tokens never show up in the host process list.
+//
+// Session teardown happens in the guest. Whatever ends the session on the host (stdin closed,
+// the client killed by any signal, the daemon tree-killing us), the guest's stdin reaches EOF
+// and guest-supervisor.py stops Claude's process tree there. Host-side cleanup cannot do
+// this reliably: the daemon tree-kills any process we spawn while it shuts us down.
 function runInSandbox(spec, claude) {
-  const pidfile = '/tmp/paseo-sbx-' + process.pid + '-' + Date.now() + '.pid';
   const env = Object.assign(sbxEnv(spec), spec.env, {
     CLAUDE_CONFIG_DIR: spec.claudeConfigDir,
     PASEO_SBX_SANDBOX: spec.name,
@@ -264,19 +273,10 @@ function runInSandbox(spec, claude) {
   const envArgs = [];
   for (const name of forwardedEnvNames(env, spec)) envArgs.push('-e', name);
   const execArgs = ['exec', '-i', '-w', process.cwd()].concat(envArgs, [
-    spec.name, 'sh', '-c', 'echo $$ > "$0"; exec "$@"', pidfile, claude,
+    spec.name, 'python3', path.join(spec.binDir, 'guest-supervisor.py'), claude,
   ], args);
   const child = cp.spawn('sbx', execArgs, { stdio: 'inherit', env: env });
-  // Killing the sbx exec client leaves the guest process running, though it closes the guest
-  // stdin, which ends stream-json input. TERM the guest process too, inside the daemon's
-  // 2 s grace period.
-  relaySignals(function () {
-    child.kill('SIGTERM');
-    cp.spawnSync('timeout', ['1.5', 'sbx', 'exec', spec.name, 'sh', '-c', 'kill -TERM "$(cat "$0")" 2>/dev/null; rm -f "$0"', pidfile], {
-      stdio: 'ignore',
-      env: sbxEnv(spec),
-    });
-  });
+  relaySignals(function () { child.kill('SIGTERM'); });
   child.on('exit', exitLikeChild);
 }
 
@@ -298,7 +298,7 @@ function main() {
   if (!claude) fail('claude was not found on PATH');
   const spec = readSpec();
   if (!spec) {
-    if (isCatalogProbe()) return runOnHost(claude);
+    if (isCatalogProbe() || isInfoCommand()) return runOnHost(claude);
     fail('missing ' + SPEC_ENV + ': claude-sbx sessions need the paseo-sbx plugin enabled');
   }
   ensureSandbox(spec, path.dirname(claude));
@@ -378,4 +378,99 @@ else:
             time.sleep(0.05)
     if pending:
         sys.exit("forwarder not listening on " + " ".join(str(port) for port in pending))
+`;
+
+/**
+ * Runs Claude Code in the sandbox and owns its teardown. Claude gets its own process group and
+ * a stdin pipe fed from ours. When our stdin reaches EOF (the session ended, or the host side
+ * went away by any means), Claude gets PASEO_SBX_STOP_GRACE seconds to end its session, then
+ * its process tree is terminated.
+ */
+export const SUPERVISOR_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+import os, signal, subprocess, sys, threading, time
+
+GRACE = float(os.environ.get("PASEO_SBX_STOP_GRACE", "5"))
+
+child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, start_new_session=True)
+
+
+def descendants(root):
+    children = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as stat:
+                fields = stat.read().rsplit(")", 1)[1].split()
+            children.setdefault(int(fields[1]), []).append(int(entry))
+        except (OSError, IndexError, ValueError):
+            pass
+    found, pending = [], [root]
+    while pending:
+        for kid in children.get(pending.pop(), []):
+            found.append(kid)
+            pending.append(kid)
+    return found
+
+
+def kill_all(pids, sig):
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+
+
+def wait_for_child(seconds):
+    deadline = time.monotonic() + seconds
+    while child.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def stop_tree():
+    # Tool processes can run in their own process groups and outlive Claude once reparented,
+    # so remember the tree while Claude still owns it.
+    known = set(descendants(child.pid))
+    wait_for_child(GRACE)
+    if child.poll() is None:
+        known.update(descendants(child.pid))
+        kill_all([child.pid] + sorted(known), signal.SIGTERM)
+        wait_for_child(1)
+    kill_all(sorted(known), signal.SIGKILL)
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def pump():
+    try:
+        while True:
+            chunk = os.read(0, 65536)
+            if not chunk:
+                break
+            child.stdin.write(chunk)
+            child.stdin.flush()
+    except OSError:
+        pass
+    try:
+        child.stdin.close()
+    except OSError:
+        pass
+    stop_tree()
+
+
+def forward(number, frame):
+    kill_all([child.pid] + descendants(child.pid), number)
+
+
+threading.Thread(target=pump, daemon=True).start()
+for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(sig, forward)
+code = child.wait()
+try:
+    os.killpg(child.pid, signal.SIGKILL)
+except OSError:
+    pass
+sys.exit(128 - code if code < 0 else code)
 `;

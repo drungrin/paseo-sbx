@@ -60,7 +60,7 @@ export async function sbxHealth(paths: PluginPaths): Promise<SbxHealth> {
   if (version.code === 127) {
     return { installed: false, version: null, daemon: "unavailable", error: "sbx is not installed" };
   }
-  const versionMatch = /Client Version:\s*(\S+)/.exec(version.stdout);
+  const versionMatch = /(?:Client Version:|sbx version)\s*(v?[0-9][^\s]*)/.exec(version.stdout);
   const status = await runSbx(paths, ["daemon", "status"], 15_000);
   const daemon = /Status:\s*\S*\s*running/.test(status.stdout)
     ? "running"

@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
-import { WRAPPER_SOURCE } from "../server/wrapper-source";
+import { SUPERVISOR_SOURCE, WRAPPER_SOURCE } from "../server/wrapper-source";
 
 // A fake sbx that keeps sandboxes in a JSON file, logs every call, and runs `exec` commands
 // locally with a VM-like environment: PATH plus the `-e NAME` variables only.
@@ -34,18 +34,34 @@ if (args[0] === 'ls') {
     break;
   }
   if (!state.sandboxes.includes(args[i])) { process.stderr.write('no such sandbox'); process.exit(1); }
-  const result = cp.spawnSync(args[i + 1], args.slice(i + 2), { cwd, env, stdio: 'inherit' });
-  process.exit(result.status === null ? 1 : result.status);
+  const guest = cp.spawn(args[i + 1], args.slice(i + 2), { cwd, env, stdio: ['pipe', 'inherit', 'inherit'], detached: true });
+  if (process.env.FAKE_SBX_DETACH) {
+    // Like a client that exits on stdin EOF while the guest keeps running.
+    guest.stdin.end();
+    guest.unref();
+    process.exit(0);
+  }
+  // The guest's stdin is a pipe from the client: it reaches EOF when the client goes away.
+  process.stdin.pipe(guest.stdin);
+  guest.stdin.on('error', () => {});
+  guest.on('exit', (code) => process.exit(code === null ? 1 : code));
 } else {
   process.exit(2);
 }
 `;
 
-// A fake claude that reports what it received and echoes the first stdin line.
+// A fake claude that reports what it received and echoes the first stdin line. With
+// CLAUDE_FAKE_BUSY it behaves like Claude in the middle of a tool call: stdin closing does not
+// stop it.
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require('node:fs');
-const input = fs.readFileSync(0, 'utf8').split('\\n')[0];
-process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env: process.env, input }));
+if (process.env.CLAUDE_FAKE_BUSY) {
+  require('node:child_process').spawn('sleep', ['300'], { stdio: 'ignore', detached: true });
+  setInterval(() => {}, 1000);
+} else {
+  const input = fs.readFileSync(0, 'utf8').split('\\n')[0];
+  process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env: process.env, input }));
+}
 `;
 
 let root: string;
@@ -75,6 +91,7 @@ afterEach(() => {
 function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
   const state = join(root, "state");
   mkdirSync(join(state, "bin"), { recursive: true });
+  writeFileSync(join(state, "bin", "guest-supervisor.py"), SUPERVISOR_SOURCE);
   return {
     version: 1,
     name: "paseo-workspace-0000abcd",
@@ -139,6 +156,13 @@ describe("wrapper", () => {
     expect(result.status).toBe(0);
     expect(result.calls).toEqual([]);
     expect(JSON.parse(result.stdout).args).toEqual(PROBE_ARGS);
+  });
+
+  it("answers version queries on the host without a spec", () => {
+    const result = run(["--version"], { cwd: workspace });
+    expect(result.status).toBe(0);
+    expect(result.calls).toEqual([]);
+    expect(JSON.parse(result.stdout).args).toEqual(["--version"]);
   });
 
   it("fails closed for a session without a spec", () => {
@@ -221,4 +245,96 @@ describe("wrapper", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("unsupported PASEO_SBX_SPEC version 2");
   });
+
+  it("stops the guest tree when the daemon signals the wrapper", async () => {
+    const session = startSession();
+    const guest = await waitForGuest();
+    session.kill("SIGTERM");
+    await exited(session);
+    await waitFor(() => !alive(guest.claude) && !alive(guest.tool));
+  });
+
+  it("stops the guest tree when the sbx client dies first", async () => {
+    const session = startSession();
+    const guest = await waitForGuest();
+    const client = Number(execFileSync("ps", ["-o", "pid=", "--ppid", String(session.pid)], { encoding: "utf8" }).trim());
+    process.kill(client, "SIGKILL");
+    await exited(session);
+    await waitFor(() => !alive(guest.claude) && !alive(guest.tool));
+  });
+
+  it("stops the guest tree when the sbx client exits cleanly while the guest is busy", async () => {
+    const session = startSession({ FAKE_SBX_DETACH: "1" });
+    await exited(session);
+    expect(session.exitCode).toBe(0);
+    const guest = await waitForGuest();
+    await waitFor(() => !alive(guest.claude) && !alive(guest.tool));
+  });
+
+  it("stops the guest tree when the session's stdin closes", async () => {
+    const session = startSession();
+    const guest = await waitForGuest();
+    session.stdin?.end();
+    await waitFor(() => !alive(guest.claude) && !alive(guest.tool));
+    await exited(session);
+  });
 });
+
+// A session whose guest is busy with a tool call when the session ends.
+function startSession(extraEnv: Record<string, string> = {}): ChildProcess {
+  return spawn(process.execPath, [wrapper, "--input-format", "stream-json"], {
+    cwd: workspace,
+    stdio: ["pipe", "ignore", "ignore"],
+    env: {
+      PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+      HOME: home,
+      FAKE_SBX_STATE: join(root, "sbx-state.json"),
+      FAKE_SBX_LOG: join(root, "sbx.log"),
+      [SPEC_ENV]: JSON.stringify(spec()),
+      CLAUDE_FAKE_BUSY: "1",
+      PASEO_SBX_STOP_GRACE: "0.5",
+      ...extraEnv,
+    },
+  });
+}
+
+async function waitFor<T>(probe: () => T | null | undefined | false, timeoutMs = 10_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = probe();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error("timed out");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+// The busy fake claude and the tool-like sleep it started.
+async function waitForGuest(): Promise<{ claude: number; tool: number }> {
+  return waitFor(() => {
+    const rows = execFileSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8" })
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((row) => row.length >= 3);
+    const claude = rows.find((row) => row.slice(2).join(" ").includes(`${bin}/claude`) && !row.join(" ").includes("guest-supervisor"));
+    if (!claude) return null;
+    const tool = rows.find((row) => row[1] === claude[0] && row[2] === "sleep");
+    return tool ? { claude: Number(claude[0]), tool: Number(tool[0]) } : null;
+  });
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function exited(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve();
+    else child.on("exit", () => resolve());
+  });
+}
+

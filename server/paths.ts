@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { FORWARDER_SOURCE, WAIT_PORTS_SOURCE, WRAPPER_SOURCE } from "./wrapper-source";
+import { FORWARDER_SOURCE, SUPERVISOR_SOURCE, WAIT_PORTS_SOURCE, WRAPPER_SOURCE } from "./wrapper-source";
 
 export interface PluginPaths {
   root: string;
@@ -36,6 +36,7 @@ const BIN_FILES = [
   { name: "paseo-sbx-claude.cjs", source: WRAPPER_SOURCE, mode: 0o755 },
   { name: "loopback-forward.py", source: FORWARDER_SOURCE, mode: 0o644 },
   { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },
+  { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
 ];
 
 /** Writes the wrapper and its guest helpers, leaving unchanged files untouched. */
