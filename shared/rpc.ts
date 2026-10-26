@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { MOUNT_SOURCES } from "./spec";
 
 const operationSchema = z.object({
   id: z.string(),
@@ -99,8 +100,39 @@ export const describeSandboxRpc = defineRpc({
     repoMemoryGiB: z.number().nullable(),
     /** Resident memory of the running VM; null when stopped or unknown. */
     rssMiB: z.number().nullable(),
-    mounts: z.array(z.string()),
-    env: z.array(z.object({ name: z.string(), present: z.boolean() })),
+    workspace: z.string(),
+    /** Configured mounts besides the workspace, as a sandbox created now gets them. */
+    mounts: z.array(
+      z.object({
+        path: z.string(),
+        readOnly: z.boolean(),
+        source: z.enum(MOUNT_SOURCES),
+        /** False when the path does not exist on the host: sbx skips it. */
+        exists: z.boolean(),
+        /** Whether the sandbox has it; null when it does not exist or predates the record. */
+        applied: z.boolean().nullable(),
+      }),
+    ),
+    /** Mounts the sandbox has that are no longer configured. */
+    removedMounts: z.array(z.string()),
+    /** Null when the workspace does not use GSD Path. */
+    gsdPath: z
+      .object({
+        /** The plugin setting that mounts `~/.gsd-path` and the members. */
+        enabled: z.boolean(),
+        members: z.array(z.object({ name: z.string(), path: z.string(), available: z.boolean() })),
+      })
+      .nullable(),
+    env: z.array(
+      z.object({
+        name: z.string(),
+        /** "all" when the plugin settings forward it to every repository. */
+        scope: z.enum(["all", "repo"]),
+        present: z.boolean(),
+        /** sbx keeps it for itself; never forwarded. */
+        reserved: z.boolean(),
+      }),
+    ),
     template: z.object({
       /** What the repo's settings select now; null is sbx's image for Claude. */
       configured: z.string().nullable(),

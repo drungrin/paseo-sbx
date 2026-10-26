@@ -14,6 +14,8 @@ export interface SandboxState {
   template?: string | null;
   templateImageId?: string | null;
   memory?: string;
+  /** Configured mounts the sandbox was created with (formatted); absent on older sandboxes. */
+  mounts?: string[];
   /** Network rules applied to the sandbox, reconciled per launch. */
   policies?: string[];
   /** A template preparation sandbox, not a working one. */

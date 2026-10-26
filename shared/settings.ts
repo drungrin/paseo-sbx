@@ -62,6 +62,11 @@ export const sandboxSettingsSchema = z.object({
   /** Host loopback ports relayed into every sandbox, beyond the ones detected per launch. */
   forwardPorts: z.array(z.number().int().min(1).max(65535)).default([]),
   excludedPaths: z.array(z.string()).default([]),
+  /**
+   * For repositories that use GSD Path: mount `~/.gsd-path` (its runtime and worktrees) and the
+   * member checkouts listed in `.project/MEMBERS.md`, writable.
+   */
+  gsdPath: z.boolean().default(true),
   repos: z.record(z.string(), repoConfigSchema).default({}),
   /** Keyed by the version 1 sandbox key; shown in the Sandboxes screen until resolved. */
   legacyOverrides: z.record(z.string(), legacyOverrideSchema).default({}),

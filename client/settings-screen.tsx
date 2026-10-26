@@ -11,11 +11,12 @@ import {
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { sandboxSettings, type IsolationMode, type SandboxSettings } from "../shared/settings";
-import { parseList, parsePortList } from "../shared/spec";
+import { invalidEnvNames, invalidMounts, parseList, parsePortList } from "../shared/spec";
 import { useTemplates } from "./queries";
 
 interface Draft {
   routeClaudeAgents: boolean;
+  gsdPath: boolean;
   isolation: IsolationMode;
   memoryPercent: string;
   memoryFloorGiB: string;
@@ -35,6 +36,7 @@ interface Draft {
 function toDraft(values: SandboxSettings): Draft {
   return {
     routeClaudeAgents: values.routeClaudeAgents,
+    gsdPath: values.gsdPath,
     isolation: values.isolation,
     memoryPercent: String(values.memoryPercent),
     memoryFloorGiB: String(values.memoryFloorGiB),
@@ -42,13 +44,14 @@ function toDraft(values: SandboxSettings): Draft {
     psiPercent: String(values.memoryAlert.psiPercent),
     availablePercent: String(values.memoryAlert.availablePercent),
     template: values.template,
-    mounts: values.mounts.join("\n"),
+    // The host's input is single-line: lists are comma-separated.
+    mounts: values.mounts.join(", "),
     claudeShared: values.claudeShared.join(", "),
     envFile: values.envFile,
     envNames: values.envNames.join(", "),
     networkAllow: values.networkAllow.join(", "),
     forwardPorts: values.forwardPorts.join(", "),
-    excludedPaths: values.excludedPaths.join("\n"),
+    excludedPaths: values.excludedPaths.join(", "),
   };
 }
 
@@ -63,9 +66,14 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   const availablePercent = Number(draft.availablePercent);
   if (!(psiPercent >= 1 && psiPercent <= 100)) return "The pressure threshold must be between 1 and 100.";
   if (!(availablePercent >= 1 && availablePercent <= 90)) return "The available RAM threshold must be between 1 and 90.";
+  const badMounts = invalidMounts(parseList(draft.mounts));
+  if (badMounts.length > 0) return `Mounts must be absolute or ~/ paths: ${badMounts.join(", ")}`;
+  const badNames = invalidEnvNames(parseList(draft.envNames));
+  if (badNames.length > 0) return `Not variables you can forward: ${badNames.join(", ")}`;
   return {
     ...base,
     routeClaudeAgents: draft.routeClaudeAgents,
+    gsdPath: draft.gsdPath,
     isolation: draft.isolation,
     memoryPercent,
     memoryFloorGiB,
@@ -150,7 +158,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput
             label="Excluded paths"
-            hint="One per line. Agents under these paths keep the Claude provider."
+            hint="Comma-separated. Agents under these paths keep the Claude provider."
             initialValue={draft.excludedPaths}
             onChangeText={update("excludedPaths")}
           />
@@ -191,10 +199,16 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput
             label="Extra mounts"
-            hint="One per line, absolute or ~/ paths. Append :ro for read-only. Shared tool state and credentials go here; install tools in a template instead."
+            hint="For every repository. Comma-separated absolute or ~/ paths; append :ro for read-only. Paths under your home also appear under the agent's home. Shared tool state and credentials go here; install tools in a template instead."
             initialValue={draft.mounts}
-            placeholder="~/.gsd-path"
+            placeholder="~/.config/gh:ro"
             onChangeText={update("mounts")}
+          />
+          <SettingsSwitch
+            label="Mount GSD Path"
+            hint="In repositories that use GSD Path: ~/.gsd-path and the member checkouts in .project/MEMBERS.md, writable."
+            value={draft.gsdPath}
+            onValueChange={update("gsdPath")}
           />
           <SettingsInput
             label="Shared Claude config items"
@@ -204,7 +218,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput
             label="Forwarded variables"
-            hint="Variables your agents get from your shell profile. Values come from the variables file, then the daemon environment."
+            hint="For every repository. Variables your agents get from your shell profile. Values come from the variables file, then the daemon environment."
             initialValue={draft.envNames}
             placeholder="MY_LICENSE_KEY, OTHER_TOKEN"
             onChangeText={update("envNames")}

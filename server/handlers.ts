@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { existsSync } from "node:fs";
 import { totalmem } from "node:os";
 import {
   describeSandboxRpc,
@@ -18,7 +19,7 @@ import {
   unpublishPortRpc,
 } from "../shared/rpc";
 import type { SandboxSettings } from "../shared/settings";
-import { memoryMiB, templatePrepName } from "../shared/spec";
+import { formatMount, isReservedEnvName, memoryMiB, templatePrepName } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
 import { ensureProvider, providerStatus } from "./provider";
 import { activeAgentsBySandbox } from "./agents";
@@ -83,7 +84,8 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
 
   server.handle(describeSandboxRpc, async ({ workspaceId, directory }, { paseo }) => {
     const settings = await deps.readSettings();
-    const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
+    const built = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
+    const { spec } = built;
     const [sandboxes, templates, repo] = await Promise.all([
       listSandboxes(paths),
       listTemplates(paths),
@@ -91,6 +93,8 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     ]);
     const fileValues = readEnvFile(settings.envFile || paths.defaultEnvFile);
     const sandbox = sandboxes.find((entry) => entry.name === spec.name);
+    const state = readSandboxState(paths, spec.name);
+    const created = sandbox && state?.mounts ? new Set(state.mounts) : null;
     return {
       key: spec.key,
       name: spec.name,
@@ -100,12 +104,26 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       memoryMiB: Number.parseInt(spec.memory, 10),
       repoMemoryGiB: settings.repos[spec.repoKey]?.memoryGiB ?? null,
       rssMiB: sandbox?.status === "running" ? (vmMemoryMiB(paths).get(spec.name) ?? null) : null,
-      mounts: [spec.workspace, ...spec.mounts],
+      workspace: spec.workspace,
+      mounts: built.mounts.map((mount) => ({
+        path: mount.path,
+        readOnly: mount.readOnly,
+        source: mount.source,
+        exists: existsSync(mount.path),
+        applied: created ? created.has(formatMount(mount)) : null,
+      })),
+      removedMounts: created ? [...created].filter((entry) => !spec.mounts.includes(entry)) : [],
+      gsdPath: built.gsdPath && {
+        enabled: built.gsdPath.enabled,
+        members: built.gsdPath.members.map((member) => ({ ...member, available: existsSync(member.path) })),
+      },
       env: forwardedEnvNames(settings, spec.repoKey).map((name) => ({
         name,
+        scope: settings.envNames.includes(name) ? ("all" as const) : ("repo" as const),
         present: fileValues[name] !== undefined || process.env[name] !== undefined,
+        reserved: isReservedEnvName(name),
       })),
-      template: templateStatus(settings, spec.repoKey, readSandboxState(paths, spec.name), templates),
+      template: templateStatus(settings, spec.repoKey, state, templates),
       agents: (await activeAgentsBySandbox(paths, paseo)).get(spec.name) ?? [],
       recreateBlockers: sandbox ? await recreateBlockers(paths, paseo, spec.name) : ["the sandbox does not exist yet"],
       templatePrep:
@@ -189,7 +207,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths });
     return runOperation("prepare", spec.name, async () => {
       await prepareSandbox(paths, spec);
-      return { name: spec.name, ...shellCommand(paths, spec.name) };
+      return { name: spec.name, ...shellCommand(paths, spec.name, { homeLinks: spec.homeLinks }) };
     });
   });
 

@@ -145,6 +145,98 @@ describe("buildSpec bindings and validation", () => {
   });
 });
 
+describe("buildSpec for GSD Path", () => {
+  function coordinator(home: string, repo: string) {
+    const member = join(home, "projects", "member");
+    mkdirSync(member, { recursive: true });
+    git(member, "init", "-q", "-b", "main");
+    writeFileSync(join(member, "README.md"), "x");
+    git(member, "add", ".");
+    git(member, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
+    const memberWorktree = join(root, "member-wt");
+    git(member, "worktree", "add", "-q", "-b", "feat", memberWorktree);
+    mkdirSync(join(repo, ".gsd-path"));
+    mkdirSync(join(repo, ".project"));
+    writeFileSync(
+      join(repo, ".project", "MEMBERS.md"),
+      [
+        "# Members",
+        "",
+        "## code",
+        "Checkout: ~/projects/member",
+        "Remote: git@example.com:code.git",
+        "",
+        "## worktree",
+        `Checkout: ${memberWorktree}`,
+        "",
+        "## gone",
+        "Checkout: /nowhere/gone",
+        "",
+      ].join("\n"),
+    );
+    mkdirSync(join(home, ".gsd-path"));
+    return { member, memberWorktree };
+  }
+
+  it("mounts ~/.gsd-path and the member checkouts writable, and links ~/.gsd-path into the guest's home", async () => {
+    const { home, hostClaude, repo, env, paths } = setup();
+    const { member, memberWorktree } = coordinator(home, repo);
+    const settings = sandboxSettingsSchema.parse({ mounts: ["~/.config/gh:ro", "/opt/shared"] });
+    const built = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
+
+    expect(built.spec.mounts).toEqual([
+      `${home}/.config/gh:ro`,
+      "/opt/shared",
+      join(home, ".gsd-path"),
+      member,
+      memberWorktree,
+      join(member, ".git"),
+      "/nowhere/gone",
+      `${hostClaude}:ro`,
+    ]);
+    expect(built.mounts.map((mount) => mount.source)).toEqual([
+      "settings",
+      "settings",
+      "gsd-path",
+      "member",
+      "member",
+      "git",
+      "member",
+      "claude",
+    ]);
+    // Only what you chose under your home: checkouts and Claude's config are reached by path.
+    expect(built.spec.homeLinks).toEqual([
+      { name: ".config/gh", target: join(home, ".config", "gh") },
+      { name: ".gsd-path", target: join(home, ".gsd-path") },
+    ]);
+    expect(built.gsdPath).toEqual({
+      enabled: true,
+      members: [
+        { name: "code", path: member },
+        { name: "worktree", path: memberWorktree },
+        { name: "gone", path: "/nowhere/gone" },
+      ],
+    });
+  });
+
+  it("mounts nothing for GSD Path when the setting is off, but still reports the members", async () => {
+    const { home, repo, env, paths } = setup();
+    const { member } = coordinator(home, repo);
+    const settings = sandboxSettingsSchema.parse({ gsdPath: false, claudeShared: [] });
+    const built = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
+    expect(built.spec.mounts).toEqual([]);
+    expect(built.spec.homeLinks).toEqual([]);
+    expect(built.gsdPath?.enabled).toBe(false);
+    expect(built.gsdPath?.members[0]).toEqual({ name: "code", path: member });
+  });
+
+  it("reports no GSD Path for a repository without a .gsd-path dir", async () => {
+    const { home, repo, env, paths } = setup();
+    const built = await buildSpec({ settings: sandboxSettingsSchema.parse({}), workspaceId: null, cwd: repo, paths, env, home });
+    expect(built.gsdPath).toBeNull();
+  });
+});
+
 describe("Claude config dir", () => {
   it("drops links to items no longer shared and keeps what Claude wrote", () => {
     const { hostClaude } = setup();

@@ -307,6 +307,8 @@ function ensureSandbox(spec, claude) {
     if (list.some(function (sandbox) { return sandbox.name === spec.name; })) return;
     const seen = new Set([spec.workspace]);
     const mounts = [spec.workspace];
+    // The configured mounts it gets; the workspace panel compares them with the current settings.
+    const created = [];
     const extra = spec.mounts.concat([claudeMount(claude), spec.binDir + ':ro', spec.claudeConfigDir]);
     for (const entry of extra) {
       const target = mountPath(entry);
@@ -317,6 +319,7 @@ function ensureSandbox(spec, claude) {
       }
       seen.add(target);
       mounts.push(entry);
+      if (spec.mounts.includes(entry)) created.push(entry);
     }
     const imageId = spec.template ? templateImageId(spec) : null;
     const createArgs = ['create', '--name', spec.name, '--memory', spec.memory, '--no-progress'];
@@ -334,6 +337,7 @@ function ensureSandbox(spec, claude) {
       template: spec.template,
       templateImageId: imageId,
       memory: spec.memory,
+      mounts: created,
       policies: [],
     });
     log('created sandbox ' + spec.name + ' (' + spec.memory + (spec.template ? ', template ' + spec.template : '') + ')');
@@ -513,21 +517,36 @@ function writeRelays(spec, relays, internalPorts, sessionPorts) {
   fs.renameSync(file + '.tmp', file);
 }
 
-// One exec per launch: relays guest loopback ports to the host (Paseo's MCP server, loopback API
-// URLs) and keeps the guest agent running. The VM stops 30 s after its last session and takes
-// both with it, so this runs per launch.
+// Arguments for home-links.sh: NAME TARGET pairs.
+function homeLinkArgs(spec) {
+  const pairs = [];
+  for (const link of spec.homeLinks || []) pairs.push(link.name, link.target);
+  return pairs;
+}
+
+// One exec per launch: links mounts into the guest's home, relays guest loopback ports to the
+// host (Paseo's MCP server, loopback API URLs) and keeps the guest agent running. The VM stops
+// 30 s after its last session and takes the relays and the agent with it, so this runs per launch.
 function ensureGuestHelpers(spec, ports) {
   const script = [
     'dir=$0',
     'state=$1',
+    'ports=$2',
+    'shift 2',
+    'sh "$dir/home-links.sh" "$@"',
     'missing=""',
-    'if [ -n "$2" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $2); fi',
+    'if [ -n "$ports" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $ports); fi',
     'if [ -n "$missing" ]; then nohup python3 "$dir/loopback-forward.py" $missing >>/tmp/paseo-sbx-forward.log 2>&1 & fi',
     'pid=$(cat /tmp/paseo-sbx-agent.pid 2>/dev/null)',
     'if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then nohup python3 "$dir/guest-agent.py" "$state" >>/tmp/paseo-sbx-agent.log 2>&1 & fi',
     'if [ -n "$missing" ]; then python3 "$dir/wait-ports.py" --wait $missing; fi',
   ].join('\n');
-  sbxOk(spec, ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' ')], 'guest helpers');
+  const output = sbxOk(
+    spec,
+    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' ')].concat(homeLinkArgs(spec)),
+    'guest helpers',
+  );
+  for (const line of output.split('\n')) if (line.trim()) log(line.trim());
 }
 
 // What the guest gets: Claude and Paseo variables from the session, the configured forwarded
@@ -664,6 +683,7 @@ function main() {
   writeRelays(spec, relays, ports, sessionPorts);
   if (args[0] === ENSURE_FLAG) {
     // Publications need their relays now; without any, preparing a sandbox does not enter it.
+    // Home links then wait for the first session, or for a shell from the workspace panel.
     if (relays.length > 0) ensureGuestHelpers(spec, []);
     return;
   }
@@ -690,6 +710,27 @@ export function launcherSource(nodeBinary: string, wrapperPath: string): string 
     "",
   ].join("\n");
 }
+
+/**
+ * Links mounts under the host home into the guest's home: arguments are NAME TARGET pairs, NAME
+ * relative to $HOME. Runs in the guest at every launch; an existing file or directory wins.
+ */
+export const HOME_LINKS_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+while [ $# -ge 2 ]; do
+  link="$HOME/$1"
+  target=$2
+  shift 2
+  # A mount sbx skipped (missing on the host) gets no link.
+  [ -e "$target" ] || continue
+  if [ -L "$link" ]; then
+    [ "$(readlink "$link")" = "$target" ] && continue
+  elif [ -e "$link" ]; then
+    echo "$link exists in the sandbox; not linking it to $target"
+    continue
+  fi
+  mkdir -p "$(dirname "$link")" && ln -sfn "$target" "$link"
+done
+`;
 
 /** Relays each guest loopback port to the same port on the host. */
 export const FORWARDER_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.

@@ -13,7 +13,13 @@ import {
   unpublishPortRpc,
   type BoundAgentInfo,
 } from "../shared/rpc";
-import { TEMPLATE_TAG_PATTERN } from "../shared/spec";
+import {
+  TEMPLATE_TAG_PATTERN,
+  invalidEnvNames,
+  invalidMounts,
+  parseList,
+  type MountSource,
+} from "../shared/spec";
 import {
   useArchiveAgent,
   useAwaitOperation,
@@ -166,30 +172,9 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
         <MemoryOverride key={`${data.repoKey}:${data.repoMemoryGiB ?? ""}`} styles={styles} data={data} />
       ) : null}
 
-      {data ? (
-        <Section styles={styles} title="Mounts">
-          <Card styles={styles}>
-            {data.mounts.map((mount, index) => (
-              <View key={mount} style={[styles.row, index === 0 ? styles.firstRow : null]}>
-                <Text style={styles.mono}>{mount}</Text>
-              </View>
-            ))}
-          </Card>
-          <Text style={styles.muted}>Mounts are fixed when the sandbox is created.</Text>
-        </Section>
-      ) : null}
-
-      {data && data.env.length > 0 ? (
-        <Section styles={styles} title="Forwarded variables">
-          <Card styles={styles}>
-            {data.env.map((entry, index) => (
-              <Row key={entry.name} styles={styles} label={entry.name} first={index === 0}>
-                {entry.present ? "set" : "missing"}
-              </Row>
-            ))}
-          </Card>
-        </Section>
-      ) : null}
+      {data ? <MountsSection styles={styles} data={data} /> : null}
+      {data?.gsdPath ? <GsdPathSection styles={styles} gsdPath={data.gsdPath} /> : null}
+      {data ? <VariablesSection styles={styles} data={data} /> : null}
 
       {data && data.siblings.length > 0 ? (
         <Section styles={styles} title="Other sandboxes of this repository">
@@ -617,5 +602,177 @@ function MemoryOverride({ styles, data }: { styles: Styles; data: Description })
         />
       </View>
     </Section>
+  );
+}
+
+const MOUNT_SOURCE_LABELS: Record<MountSource, string> = {
+  settings: "all repositories",
+  repo: "this repository",
+  "gsd-path": "GSD Path",
+  member: "GSD Path member",
+  git: "git metadata",
+  claude: "shared Claude config",
+};
+
+function mountNote(mount: Description["mounts"][number]): string {
+  const parts = [MOUNT_SOURCE_LABELS[mount.source], mount.readOnly ? "read-only" : "writable"];
+  if (!mount.exists) parts.push("missing on the host, skipped");
+  else if (mount.applied === false) parts.push("not in the sandbox yet");
+  return parts.join(" · ");
+}
+
+function MountsSection({ styles, data }: { styles: Styles; data: Description }) {
+  const { repo, save, settings } = useRepoSettings(data.repoKey);
+  const outdated = data.removedMounts.length > 0 || data.mounts.some((mount) => mount.exists && mount.applied === false);
+  return (
+    <Section styles={styles} title="Mounts">
+      <Card styles={styles}>
+        <View style={[styles.row, styles.stackedRow, styles.firstRow]}>
+          <Text style={styles.mono}>{data.workspace}</Text>
+          <Text style={styles.muted}>workspace · writable</Text>
+        </View>
+        {data.mounts.map((mount) => (
+          <View key={mount.path} style={[styles.row, styles.stackedRow]}>
+            <Text style={styles.mono}>{mount.path}</Text>
+            <Text style={mount.exists ? styles.muted : styles.error}>{mountNote(mount)}</Text>
+          </View>
+        ))}
+      </Card>
+      {data.removedMounts.length > 0 ? (
+        <Text style={styles.muted}>{`Still in the sandbox, no longer configured: ${data.removedMounts.join(", ")}.`}</Text>
+      ) : null}
+      {outdated ? <Text style={styles.error}>Recreate the sandbox to apply the mount changes.</Text> : null}
+      {repo && settings.status === "ready" ? (
+        // Keyed so a saved value starts a fresh draft.
+        <ListEditor
+          key={repo.mounts.join("\n")}
+          styles={styles}
+          label="Mounts for this repository"
+          hint="Comma-separated absolute or ~/ paths; append :ro for read-only. Paths under your home also appear under the agent's home. Sandboxes get them when created: recreate to apply here."
+          placeholder="~/.config/gh:ro"
+          saved={repo.mounts}
+          validate={(items) => {
+            const invalid = invalidMounts(items);
+            return invalid.length > 0 ? `Use absolute or ~/ paths: ${invalid.join(", ")}` : null;
+          }}
+          saving={settings.saving}
+          saveError={settings.saveError}
+          onSave={(mounts) => void save({ mounts })}
+        />
+      ) : null}
+    </Section>
+  );
+}
+
+function GsdPathSection({ styles, gsdPath }: { styles: Styles; gsdPath: NonNullable<Description["gsdPath"]> }) {
+  return (
+    <Section styles={styles} title="GSD Path members">
+      <Card styles={styles}>
+        {gsdPath.members.length === 0 ? (
+          <View style={[styles.row, styles.firstRow]}>
+            <Text style={styles.muted}>.project/MEMBERS.md lists no members.</Text>
+          </View>
+        ) : (
+          gsdPath.members.map((member, index) => (
+            <View key={member.name} style={[styles.row, styles.stackedRow, index === 0 ? styles.firstRow : null]}>
+              <Text style={styles.label}>{member.name}</Text>
+              <Text style={styles.mono}>{member.path}</Text>
+              {member.available ? null : <Text style={styles.error}>No checkout at this path on the host.</Text>}
+            </View>
+          ))
+        )}
+      </Card>
+      <Text style={styles.muted}>
+        {gsdPath.enabled
+          ? "The sandbox mounts ~/.gsd-path and the member checkouts writable; the agent's ~/.gsd-path links to yours."
+          : "GSD Path mounts are off in the plugin settings."}
+      </Text>
+    </Section>
+  );
+}
+
+function envNote(entry: Description["env"][number]): string {
+  if (entry.reserved) return "kept by sbx, not forwarded";
+  return `${entry.present ? "set" : "missing"} · ${entry.scope === "all" ? "all repositories" : "this repository"}`;
+}
+
+function VariablesSection({ styles, data }: { styles: Styles; data: Description }) {
+  const { repo, save, settings } = useRepoSettings(data.repoKey);
+  const status = useStatus();
+  const envFile = status.data?.envFile ?? "the variables file";
+  return (
+    <Section styles={styles} title="Forwarded variables">
+      {data.env.length > 0 ? (
+        <Card styles={styles}>
+          {data.env.map((entry, index) => (
+            <Row key={entry.name} styles={styles} label={entry.name} first={index === 0}>
+              {envNote(entry)}
+            </Row>
+          ))}
+        </Card>
+      ) : null}
+      {repo && settings.status === "ready" ? (
+        <ListEditor
+          key={repo.envNames.join("\n")}
+          styles={styles}
+          label="Variables for this repository"
+          hint={`Comma-separated names. Values come from ${envFile}, then the daemon environment. The next session gets them.`}
+          placeholder="MY_LICENSE_KEY, OTHER_TOKEN"
+          saved={repo.envNames}
+          validate={(items) => {
+            const invalid = invalidEnvNames(items);
+            return invalid.length > 0 ? `Not variables you can forward: ${invalid.join(", ")}` : null;
+          }}
+          saving={settings.saving}
+          saveError={settings.saveError}
+          onSave={(envNames) => void save({ envNames })}
+        />
+      ) : null}
+    </Section>
+  );
+}
+
+/** A comma-separated list setting of the repository, saved on its own. */
+function ListEditor({
+  styles,
+  label,
+  hint,
+  placeholder,
+  saved,
+  validate,
+  saving,
+  saveError,
+  onSave,
+}: {
+  styles: Styles;
+  label: string;
+  hint: string;
+  placeholder: string;
+  saved: readonly string[];
+  validate(items: string[]): string | null;
+  saving: boolean;
+  saveError: string | null;
+  onSave(items: string[]): void;
+}) {
+  const [draft, setDraft] = useState(saved.join(", "));
+  const items = parseList(draft);
+  const error = validate(items);
+  const changed = items.join("\n") !== saved.join("\n");
+  return (
+    <>
+      <Card styles={styles}>
+        <SettingsInput
+          label={label}
+          hint={hint}
+          initialValue={draft}
+          placeholder={placeholder}
+          error={error ?? saveError}
+          onChangeText={setDraft}
+        />
+      </Card>
+      <View style={styles.actions}>
+        <Button styles={styles} label="Save" primary disabled={error !== null || !changed || saving} onPress={() => onSave(items)} />
+      </View>
+    </>
   );
 }

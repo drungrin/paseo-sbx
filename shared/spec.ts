@@ -26,6 +26,11 @@ export interface SandboxSpec {
   /** Primary mount; the sandbox is created with it first. */
   workspace: string;
   mounts: string[];
+  /**
+   * Mounts under the host home also reached from the guest's home: `name` (relative to it) links to
+   * `target`, the mounted host path. Tools that look in `~` find them there.
+   */
+  homeLinks: HomeLink[];
   /** sbx `--memory` value. */
   memory: string;
   cpus: number;
@@ -35,6 +40,11 @@ export interface SandboxSpec {
   autoPublish: number[];
   env: Record<string, string>;
   claudeConfigDir: string;
+}
+
+export interface HomeLink {
+  name: string;
+  target: string;
 }
 
 export interface SandboxIdentity {
@@ -148,6 +158,10 @@ export interface MountEntry {
   readOnly: boolean;
 }
 
+/** Why a sandbox mounts a path; the workspace panel shows it. */
+export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "claude"] as const;
+export type MountSource = (typeof MOUNT_SOURCES)[number];
+
 /** Parses `path` or `path:ro`, expanding a leading `~/`. Returns null for relative paths. */
 export function parseMount(entry: string, home: string): MountEntry | null {
   const trimmed = entry.trim();
@@ -166,8 +180,8 @@ export function formatMount(mount: MountEntry): string {
 }
 
 /** Dedupes by path; a writable entry wins over a read-only one for the same path. */
-export function mergeMounts(mounts: readonly MountEntry[]): MountEntry[] {
-  const byPath = new Map<string, MountEntry>();
+export function mergeMounts<Mount extends MountEntry>(mounts: readonly Mount[]): Mount[] {
+  const byPath = new Map<string, Mount>();
   for (const mount of mounts) {
     const existing = byPath.get(mount.path);
     if (!existing || (existing.readOnly && !mount.readOnly)) byPath.set(mount.path, mount);
@@ -202,6 +216,18 @@ export function parseEnvFile(text: string): Record<string, string> {
     values[match[1]] = value;
   }
   return values;
+}
+
+/** Entries `parseMount` drops: neither absolute nor under `~/`. */
+export function invalidMounts(entries: readonly string[]): string[] {
+  return entries.filter((entry) => parseMount(entry, "/") === null);
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Names that are not variable names, or that sbx keeps for itself. */
+export function invalidEnvNames(names: readonly string[]): string[] {
+  return names.filter((name) => !ENV_NAME.test(name) || isReservedEnvName(name));
 }
 
 export function parseList(text: string): string[] {
