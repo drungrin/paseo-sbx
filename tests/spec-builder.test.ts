@@ -83,6 +83,7 @@ describe("buildSpec", () => {
       envNames: ["LICENSE_KEY", "FROM_DAEMON", "ABSENT"],
       repos: { [`git:${realpathSync(repo)}/.git`]: { envNames: ["EXTRA"], memoryGiB: 6 } },
       isolation: "directory",
+      githubHttps: false,
     });
     const { spec, missingEnv } = await buildSpec({
       settings,
@@ -113,7 +114,7 @@ describe("buildSpec bindings and validation", () => {
 
   it("refuses to forward variables the sbx client reserves", async () => {
     const { home, repo, env, paths } = setup();
-    const settings = sandboxSettingsSchema.parse({ envNames: ["PATH", "SBX_TOKEN", "DOCKER_HOST", "OK"] });
+    const settings = sandboxSettingsSchema.parse({ envNames: ["PATH", "SBX_TOKEN", "DOCKER_HOST", "OK"], githubHttps: false });
     const { spec, rejectedEnv } = await buildSpec({
       settings,
       workspaceId: null,
@@ -142,6 +143,52 @@ describe("buildSpec bindings and validation", () => {
     const b = await buildSpec({ settings, workspaceId: null, cwd: plain, paths, env, home });
     expect(a.spec.workspace).toBe(plain);
     expect(a.spec.name).toBe(b.spec.name);
+  });
+});
+
+describe("buildSpec resources and git", () => {
+  it("lets a repository pick its CPUs and sizes every sandbox's Docker disk", async () => {
+    const { home, repo, env, paths } = setup();
+    const repoKey = `git:${realpathSync(repo)}/.git`;
+    const settings = sandboxSettingsSchema.parse({ cpus: 8, dockerDiskGiB: 60, repos: { [repoKey]: { cpus: 4 } } });
+    const { spec } = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
+    expect(spec.cpus).toBe(4);
+    expect(spec.dockerDisk).toBe("60g");
+    const defaults = await buildSpec({ settings: sandboxSettingsSchema.parse({}), workspaceId: null, cwd: repo, paths, env, home });
+    expect(defaults.spec.cpus).toBe(0);
+    expect(defaults.spec.dockerDisk).toBeNull();
+  });
+
+  it("rewrites GitHub SSH remotes to HTTPS after the git config you forward", async () => {
+    const { home, repo, env, paths } = setup();
+    mkdirSync(join(home, ".config", "shell"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "shell", "env.sh"),
+      "export GIT_CONFIG_COUNT=1\nexport GIT_CONFIG_KEY_0=core.editor\nexport GIT_CONFIG_VALUE_0=vi\n",
+    );
+    const settings = sandboxSettingsSchema.parse({
+      envFile: "~/.config/shell/env.sh",
+      envNames: ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"],
+    });
+    const { spec } = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
+    expect(spec.env).toEqual({
+      GIT_CONFIG_COUNT: "3",
+      GIT_CONFIG_KEY_0: "core.editor",
+      GIT_CONFIG_VALUE_0: "vi",
+      GIT_CONFIG_KEY_1: "url.https://github.com/.insteadOf",
+      GIT_CONFIG_VALUE_1: "git@github.com:",
+      GIT_CONFIG_KEY_2: "url.https://github.com/.insteadOf",
+      GIT_CONFIG_VALUE_2: "ssh://git@github.com/",
+    });
+    const off = await buildSpec({
+      settings: sandboxSettingsSchema.parse({ githubHttps: false }),
+      workspaceId: null,
+      cwd: repo,
+      paths,
+      env,
+      home,
+    });
+    expect(off.spec.env).toEqual({});
   });
 });
 

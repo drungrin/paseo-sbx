@@ -34,6 +34,8 @@ export interface SandboxSpec {
   /** sbx `--memory` value. */
   memory: string;
   cpus: number;
+  /** `/var/lib/docker` size at creation (`DOCKER_SANDBOXES_DOCKER_SIZE`); null uses sbx's. */
+  dockerDisk: string | null;
   networkAllow: string[];
   forwardPorts: number[];
   /** Guest ports of the repository published on ephemeral host ports at every launch. */

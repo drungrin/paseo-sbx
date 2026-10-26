@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { existsSync } from "node:fs";
-import { totalmem } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import {
   describeSandboxRpc,
   ensureProviderRpc,
@@ -19,7 +19,7 @@ import {
   unpublishPortRpc,
 } from "../shared/rpc";
 import type { SandboxSettings } from "../shared/settings";
-import { formatMount, isReservedEnvName, memoryMiB, templatePrepName } from "../shared/spec";
+import { formatMount, isReservedEnvName, memoryMiB, templatePrepName, type SandboxSpec } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
 import { ensureProvider, providerStatus } from "./provider";
 import { activeAgentsBySandbox } from "./agents";
@@ -29,7 +29,7 @@ import { actualPublications, internalPorts, publishPort, readListeners, unpublis
 import { recreateBlockers, recreateSandbox } from "./recreate";
 import { repoDisplayName, repoIdentity } from "./repo";
 import { listSandboxes, prepareSandbox, removeSandbox, sbxHealth, shellCommand, stopSandbox } from "./sbx";
-import { buildSpec, forwardedEnvNames, readEnvFile, templateFor } from "./spec-builder";
+import { buildSpec, envFilePath, forwardedEnvNames, readEnvFile, templateFor } from "./spec-builder";
 import { readSandboxState, type SandboxState } from "./state";
 import {
   ensureTemplatePrep,
@@ -41,6 +41,18 @@ import {
   templateUsers,
   type TemplateInfo,
 } from "./templates";
+
+/**
+ * Whether the sandbox has the memory, CPUs and Docker disk the settings select now; null when its
+ * record predates them. CPUs and disk are compared only once recorded.
+ */
+function resourcesApplied(state: SandboxState | null, spec: SandboxSpec): boolean | null {
+  if (!state?.memory) return null;
+  if (state.memory !== spec.memory) return false;
+  if (state.cpus !== undefined && state.cpus !== spec.cpus) return false;
+  if (state.dockerDisk !== undefined && state.dockerDisk !== spec.dockerDisk) return false;
+  return true;
+}
 
 /** Compares what the repo selects now with what the sandbox was created from, by image ID. */
 function templateStatus(
@@ -72,8 +84,9 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       provider,
       stateHome: paths.stateHome,
       wrapperPath: paths.wrapper,
-      envFile: settings.envFile || paths.defaultEnvFile,
+      envFile: envFilePath(settings, paths),
       hostMemoryMiB: Math.round(totalmem() / 1024 / 1024),
+      hostCpus: availableParallelism(),
       defaultMemoryMiB: memoryMiB(settings, undefined, totalmem()),
     };
   });
@@ -91,7 +104,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       listTemplates(paths),
       repoIdentity(directory),
     ]);
-    const fileValues = readEnvFile(settings.envFile || paths.defaultEnvFile);
+    const fileValues = readEnvFile(envFilePath(settings, paths));
     const sandbox = sandboxes.find((entry) => entry.name === spec.name);
     const state = readSandboxState(paths, spec.name);
     const created = sandbox && state?.mounts ? new Set(state.mounts) : null;
@@ -103,6 +116,9 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       repoName: repoDisplayName(repo),
       memoryMiB: Number.parseInt(spec.memory, 10),
       repoMemoryGiB: settings.repos[spec.repoKey]?.memoryGiB ?? null,
+      cpus: spec.cpus,
+      repoCpus: settings.repos[spec.repoKey]?.cpus ?? null,
+      resourcesApplied: sandbox ? resourcesApplied(state, spec) : null,
       rssMiB: sandbox?.status === "running" ? (vmMemoryMiB(paths).get(spec.name) ?? null) : null,
       workspace: spec.workspace,
       mounts: built.mounts.map((mount) => ({

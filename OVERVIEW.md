@@ -18,9 +18,11 @@ Open **Sandboxes** in the sidebar and press **Configure** to register the provid
 
 - **One sandbox per**: workspace (default) or directory. Workspaces that share a directory get separate VMs in workspace mode.
 - **Templates**: a default template for new sandboxes, and one per repository in the workspace's **Sandbox** panel. **Prepare template** opens a shell in a clean sandbox to install your tools, then saves it.
-- **Memory**: a percentage of host RAM per sandbox (10% by default) with a minimum, plus a per-repository value in the workspace's **Sandbox** panel.
-- **Extra mounts**: toolchains and shared tool state your agents need, such as a version manager's install directory (`:ro` for read-only).
-- **Forwarded variables**: values your agents get from your shell profile on the host, read from a dotenv file (`~/.config/paseo-sbx/env` by default). Only Claude and Paseo variables reach the sandbox automatically; tokens such as `GH_TOKEN` must be listed here.
+- **Resources**: memory as a percentage of host RAM per sandbox (10% by default) with a minimum, CPUs (all by default) and the size of the VM's Docker disk (sbx's 10 GB by default). A repository picks its own memory and CPUs in the workspace's **Sandbox** panel. Builds start a process per CPU, so a repository with little memory may need fewer CPUs.
+- **Extra mounts**: shared tool state and credentials your agents need, for every repository or for one in its **Sandbox** panel (`:ro` for read-only). A mount under your home also appears at the same place under the agent's home. Install tools in a template instead.
+- **GSD Path**: a repository with a `.gsd-path` directory gets `~/.gsd-path` and the member checkouts listed in `.project/MEMBERS.md`, writable. The **Sandbox** panel lists the members.
+- **Forwarded variables**: names of the variables your agents get from your shell profile, for every repository or for one in its **Sandbox** panel. The daemon does not load your shell profile, so values come from a dotenv file (`~/.config/paseo-sbx/env` by default; your shell's env file works too, `export NAME=value` lines included), then the daemon environment. Only Claude and Paseo variables reach the sandbox automatically.
+- **GitHub over HTTPS** (on by default): GitHub SSH remotes go over HTTPS inside the sandbox, where the sbx proxy signs in with your token. Store it once with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set github --command "$(command -v gh) auth token"`; the token never enters the sandbox.
 - **Allowed destinations** and **Extra host ports**: the sandbox network policy and additional host loopback ports to relay.
 - **Excluded paths**: workspaces that keep running Claude on the host when routing is on.
 
@@ -33,7 +35,7 @@ The **Sandboxes** screen shows the memory the VMs hold, the host's available RAM
 ## Limits
 
 - Terminals, workspace scripts and services from `paseo.json` still run on the host.
-- Template, mounts, memory and CPUs are fixed when a sandbox is created. **Recreate** applies new ones once every agent of the sandbox is archived; it discards what runs inside the VM. Existing agents keep the sandbox they started in when you change the isolation mode.
+- Template, mounts, memory, CPUs and Docker disk are fixed when a sandbox is created. **Recreate** applies new ones once every agent of the sandbox is archived; it discards what runs inside the VM. Existing agents keep the sandbox they started in when you change the isolation mode.
 - Templates do not include the images of the VM's own Docker: each new sandbox pulls them again.
 - **Stop** in the panel shuts the VM's Docker down first. The automatic stop 30 seconds after the last agent, and a restart of Paseo, are abrupt for what runs inside: databases go through crash recovery on the next start.
 - Memory figures come from an internal detail of Docker Sandboxes 0.49 and show as unknown if a later version changes it. Linux only.

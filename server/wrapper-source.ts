@@ -120,9 +120,10 @@ function sbxFailure(what, status, output) {
 
 // Auxiliary sbx calls never inherit stdin: an sbx exec without -i still drains it, which
 // would swallow the SDK's first stream-json message.
-function sbx(spec, sbxArgs) {
+// extraEnv carries settings the sbx client reads itself, never session values.
+function sbx(spec, sbxArgs, extraEnv) {
   const result = cp.spawnSync('sbx', sbxArgs, {
-    env: managementEnv(spec),
+    env: Object.assign(managementEnv(spec), extraEnv),
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     timeout: 600000,
@@ -131,8 +132,8 @@ function sbx(spec, sbxArgs) {
   return result;
 }
 
-function sbxOk(spec, sbxArgs, what) {
-  const result = sbx(spec, sbxArgs);
+function sbxOk(spec, sbxArgs, what, extraEnv) {
+  const result = sbx(spec, sbxArgs, extraEnv);
   if (result.status !== 0) throw sbxFailure(what, result.status, (result.stderr || result.stdout || '').trim());
   return result.stdout;
 }
@@ -325,7 +326,9 @@ function ensureSandbox(spec, claude) {
     const createArgs = ['create', '--name', spec.name, '--memory', spec.memory, '--no-progress'];
     if (spec.cpus > 0) createArgs.push('--cpus', String(spec.cpus));
     if (spec.template) createArgs.push('-t', spec.template, '--pull', 'never');
-    sbxOk(spec, createArgs.concat(['claude'], mounts), 'sbx create ' + spec.name);
+    // sbx's per-sandbox override of its global sandbox.disk.dockerVolume setting.
+    const createEnv = spec.dockerDisk ? { DOCKER_SANDBOXES_DOCKER_SIZE: spec.dockerDisk } : undefined;
+    sbxOk(spec, createArgs.concat(['claude'], mounts), 'sbx create ' + spec.name, createEnv);
     // A recreated sandbox keeps the publications chosen for it; reconcilePublications reapplies them.
     const previous = readState(spec);
     writeState(spec, {
@@ -337,6 +340,8 @@ function ensureSandbox(spec, claude) {
       template: spec.template,
       templateImageId: imageId,
       memory: spec.memory,
+      cpus: spec.cpus,
+      dockerDisk: spec.dockerDisk,
       mounts: created,
       policies: [],
     });

@@ -14,6 +14,9 @@ export interface SandboxState {
   template?: string | null;
   templateImageId?: string | null;
   memory?: string;
+  /** Recorded since the plugin learned them; absent on older sandboxes. */
+  cpus?: number;
+  dockerDisk?: string | null;
   /** Configured mounts the sandbox was created with (formatted); absent on older sandboxes. */
   mounts?: string[];
   /** Network rules applied to the sandbox, reconciled per launch. */

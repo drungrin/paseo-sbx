@@ -19,6 +19,8 @@ const repoConfigSchema = z.object({
   /** sbx template for new sandboxes of the repo; empty uses the global default. */
   template: z.string().default(""),
   memoryGiB: z.number().min(0.5).optional(),
+  /** 0 lets sbx use every host CPU; unset uses the global value. */
+  cpus: z.number().int().min(0).optional(),
   mounts: z.array(z.string()).default([]),
   envNames: z.array(z.string()).default([]),
   /** Guest ports published on ephemeral host ports whenever a sandbox of the repo is prepared. */
@@ -50,14 +52,24 @@ export const sandboxSettingsSchema = z.object({
   memoryFloorGiB: z.number().min(1).default(2),
   /** 0 lets sbx use every host CPU. */
   cpus: z.number().int().min(0).default(0),
+  /** Size of each sandbox's `/var/lib/docker` volume, sparse on the host; 0 uses sbx's (10 GB). */
+  dockerDiskGiB: z.number().int().min(0).default(0),
   /** Default sbx template for new sandboxes; empty uses sbx's image for Claude. */
   template: z.string().default(""),
   /** Extra mounts for every sandbox: absolute or `~/` paths, `:ro` for read-only. */
   mounts: z.array(z.string()).default([]),
   claudeShared: z.array(z.string()).default(DEFAULT_CLAUDE_SHARED),
-  /** dotenv-style file the forwarded variables are read from; empty uses the default path. */
+  /**
+   * dotenv-style file the forwarded variables are read from (`export NAME=value` works, so a shell
+   * env file can serve); empty uses the default path. `~/` is your home.
+   */
   envFile: z.string().default(""),
   envNames: z.array(z.string()).default([]),
+  /**
+   * Rewrites GitHub SSH remotes to HTTPS inside sandboxes, where the sbx proxy signs in with the
+   * `github` secret (`sbx secret set github`). A guest has no SSH keys.
+   */
+  githubHttps: z.boolean().default(true),
   networkAllow: z.array(z.string()).default(["**"]),
   /** Host loopback ports relayed into every sandbox, beyond the ones detected per launch. */
   forwardPorts: z.array(z.number().int().min(1).max(65535)).default([]),

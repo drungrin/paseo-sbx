@@ -15,7 +15,7 @@ state.sandboxes = state.sandboxes || [];
 state.templates = state.templates || [];
 state.stopped = state.stopped || [];
 const start = (name) => { state.stopped = state.stopped.filter((entry) => entry !== name); };
-fs.appendFileSync(process.env.FAKE_SBX_LOG, JSON.stringify({ args, stateHome: process.env.XDG_STATE_HOME, envNames: Object.keys(process.env) }) + '\\n');
+fs.appendFileSync(process.env.FAKE_SBX_LOG, JSON.stringify({ args, stateHome: process.env.XDG_STATE_HOME, envNames: Object.keys(process.env), dockerSize: process.env.DOCKER_SANDBOXES_DOCKER_SIZE }) + '\\n');
 const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
 if (args[0] === 'ls') {
   if (process.env.FAKE_SBX_LS_ERROR) { process.stderr.write(process.env.FAKE_SBX_LS_ERROR); process.exit(1); }

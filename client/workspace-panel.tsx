@@ -153,7 +153,7 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
           <Text style={styles.muted}>
             {data.recreateBlockers.length > 0
               ? `Recreate needs every agent of this sandbox archived: ${data.recreateBlockers.join("; ")}.`
-              : "Recreate removes the VM, with the containers and data inside it, and creates it again with the repo's current template, mounts and memory. Transcripts stay."}
+              : "Recreate removes the VM, with the containers and data inside it, and creates it again with the repo's current template, mounts and resources. Transcripts stay."}
           </Text>
         ) : null}
         {openShell.isPending || action.isPending ? <Text style={styles.muted}>Working on the sandbox…</Text> : null}
@@ -169,7 +169,11 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
       {data ? <TemplateSection styles={styles} data={data} workspaceId={workspaceId} directory={directory} /> : null}
       {data ? (
         // Keyed so a different repo or a saved value starts from a fresh draft.
-        <MemoryOverride key={`${data.repoKey}:${data.repoMemoryGiB ?? ""}`} styles={styles} data={data} />
+        <ResourcesOverride
+          key={`${data.repoKey}:${data.repoMemoryGiB ?? ""}:${data.repoCpus ?? ""}`}
+          styles={styles}
+          data={data}
+        />
       ) : null}
 
       {data ? <MountsSection styles={styles} data={data} /> : null}
@@ -569,36 +573,54 @@ function SaveTemplateForm({
   );
 }
 
-function MemoryOverride({ styles, data }: { styles: Styles; data: Description }) {
+function ResourcesOverride({ styles, data }: { styles: Styles; data: Description }) {
   const { repo, save, settings } = useRepoSettings(data.repoKey);
   const status = useStatus();
-  const [draft, setDraft] = useState(data.repoMemoryGiB === null ? "" : String(data.repoMemoryGiB));
+  const [memoryDraft, setMemoryDraft] = useState(data.repoMemoryGiB === null ? "" : String(data.repoMemoryGiB));
+  const [cpusDraft, setCpusDraft] = useState(data.repoCpus === null ? "" : String(data.repoCpus));
   if (!repo || settings.status !== "ready") return null;
 
   const maxGiB = status.data ? Math.floor((status.data.hostMemoryMiB * 0.75) / 102.4) / 10 : null;
-  const value = draft.trim() === "" ? null : Number(draft);
-  const invalid =
-    value !== null && !(Number.isFinite(value) && value >= 0.5 && (maxGiB === null || value <= maxGiB));
+  const memory = memoryDraft.trim() === "" ? null : Number(memoryDraft);
+  const memoryInvalid =
+    memory !== null && !(Number.isFinite(memory) && memory >= 0.5 && (maxGiB === null || memory <= maxGiB));
+  const hostCpus = status.data?.hostCpus ?? null;
+  const cpus = cpusDraft.trim() === "" ? null : Number(cpusDraft);
+  const cpusInvalid = cpus !== null && !(Number.isInteger(cpus) && cpus >= 0 && (hostCpus === null || cpus <= hostCpus));
+  const defaultCpus = settings.values.cpus === 0 ? `all${hostCpus === null ? "" : ` ${hostCpus}`}` : String(settings.values.cpus);
 
   return (
-    <Section styles={styles} title="Memory for this repository">
+    <Section styles={styles} title="Resources for this repository">
       <Card styles={styles}>
         <SettingsInput
           label="Memory (GiB)"
-          hint="Empty uses the default. Applies to sandboxes created afterwards: recreate to apply it here."
-          initialValue={draft}
+          hint="Empty uses the default."
+          initialValue={memoryDraft}
           placeholder="default"
-          error={invalid ? `Enter a number from 0.5${maxGiB === null ? "" : ` to ${maxGiB}`}` : settings.saveError}
-          onChangeText={setDraft}
+          error={memoryInvalid ? `Enter a number from 0.5${maxGiB === null ? "" : ` to ${maxGiB}`}` : null}
+          onChangeText={setMemoryDraft}
+        />
+        <SettingsInput
+          label="CPUs"
+          hint={`Empty uses the default (${defaultCpus}); 0 is every CPU. Builds start a process per CPU, so with little memory fewer CPUs keep them from running out of it.`}
+          initialValue={cpusDraft}
+          placeholder="default"
+          error={cpusInvalid ? `Enter a whole number from 0${hostCpus === null ? "" : ` to ${hostCpus}`}` : settings.saveError}
+          onChangeText={setCpusDraft}
         />
       </Card>
+      {data.resourcesApplied === false ? (
+        <Text style={styles.error}>The sandbox was created with other resources: recreate it to apply these.</Text>
+      ) : (
+        <Text style={styles.muted}>Sandboxes get them when created: recreate to apply a change here.</Text>
+      )}
       <View style={styles.actions}>
         <Button
           styles={styles}
           label="Save"
           primary
-          disabled={invalid || settings.saving}
-          onPress={() => void save({ memoryGiB: value ?? undefined })}
+          disabled={memoryInvalid || cpusInvalid || settings.saving}
+          onPress={() => void save({ memoryGiB: memory ?? undefined, cpus: cpus ?? undefined })}
         />
       </View>
     </Section>

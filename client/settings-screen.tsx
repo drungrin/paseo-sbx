@@ -21,6 +21,8 @@ interface Draft {
   memoryPercent: string;
   memoryFloorGiB: string;
   cpus: string;
+  dockerDiskGiB: string;
+  githubHttps: boolean;
   psiPercent: string;
   availablePercent: string;
   template: string;
@@ -41,6 +43,8 @@ function toDraft(values: SandboxSettings): Draft {
     memoryPercent: String(values.memoryPercent),
     memoryFloorGiB: String(values.memoryFloorGiB),
     cpus: String(values.cpus),
+    dockerDiskGiB: String(values.dockerDiskGiB),
+    githubHttps: values.githubHttps,
     psiPercent: String(values.memoryAlert.psiPercent),
     availablePercent: String(values.memoryAlert.availablePercent),
     template: values.template,
@@ -62,6 +66,8 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   if (!(memoryPercent >= 1 && memoryPercent <= 90)) return "Memory percent must be between 1 and 90.";
   if (!(memoryFloorGiB >= 1)) return "Memory floor must be at least 1 GiB.";
   if (!(Number.isInteger(cpus) && cpus >= 0)) return "CPUs must be a whole number (0 = all).";
+  const dockerDiskGiB = Number(draft.dockerDiskGiB);
+  if (!(Number.isInteger(dockerDiskGiB) && dockerDiskGiB >= 0)) return "Docker disk must be a whole number of GiB (0 = sbx's).";
   const psiPercent = Number(draft.psiPercent);
   const availablePercent = Number(draft.availablePercent);
   if (!(psiPercent >= 1 && psiPercent <= 100)) return "The pressure threshold must be between 1 and 100.";
@@ -78,6 +84,8 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     memoryPercent,
     memoryFloorGiB,
     cpus,
+    dockerDiskGiB,
+    githubHttps: draft.githubHttps,
     memoryAlert: { psiPercent, availablePercent },
     template: draft.template,
     mounts: parseList(draft.mounts),
@@ -173,7 +181,18 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             onChangeText={update("memoryPercent")}
           />
           <SettingsInput label="Minimum memory (GiB)" initialValue={draft.memoryFloorGiB} onChangeText={update("memoryFloorGiB")} />
-          <SettingsInput label="CPUs (0 = all)" initialValue={draft.cpus} onChangeText={update("cpus")} />
+          <SettingsInput
+            label="CPUs (0 = all)"
+            hint="A repository can pick its own in its Sandbox panel."
+            initialValue={draft.cpus}
+            onChangeText={update("cpus")}
+          />
+          <SettingsInput
+            label="Docker disk per sandbox (GiB)"
+            hint="The VM's /var/lib/docker: images, containers and their data. 0 uses sbx's 10 GB. The host only spends what a sandbox fills."
+            initialValue={draft.dockerDiskGiB}
+            onChangeText={update("dockerDiskGiB")}
+          />
           <SettingsInput
             label="Alert at memory pressure (%)"
             hint="The host's memory PSI over the last minute. The Sandboxes screen alerts at or above it."
@@ -225,9 +244,15 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput
             label="Variables file"
-            hint="dotenv format. Empty uses ~/.config/paseo-sbx/env."
+            hint="Where forwarded values come from: the daemon does not load your shell profile. dotenv format, and export NAME=value lines work, so your shell's env file can serve. Empty uses ~/.config/paseo-sbx/env."
             initialValue={draft.envFile}
             onChangeText={update("envFile")}
+          />
+          <SettingsSwitch
+            label="GitHub over HTTPS"
+            hint="git in the sandbox reaches GitHub SSH remotes over HTTPS, where the sbx proxy signs in with the secret from sbx secret set github. Sandboxes have no SSH keys."
+            value={draft.githubHttps}
+            onValueChange={update("githubHttps")}
           />
         </SettingsCard>
       </SettingsSection>
@@ -250,7 +275,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
       </SettingsSection>
 
       <SettingsCard>
-        <SettingsRow label="Template, mounts, memory and CPUs apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them." />
+        <SettingsRow label="Template, mounts, memory, CPUs and Docker disk apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them." />
         <SettingsAction
           label={error ?? settings.saveError ?? "Save settings"}
           actionLabel={settings.saving ? "Saving…" : "Save"}

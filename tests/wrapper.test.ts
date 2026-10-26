@@ -68,6 +68,7 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
     workspace,
     mounts: [join(root, "missing-mount"), `${home}:ro`],
     homeMounts: [],
+    dockerDisk: null,
     memory: "3072m",
     cpus: 0,
     networkAllow: ["**"],
@@ -83,7 +84,7 @@ interface Run {
   status: number | null;
   stdout: string;
   stderr: string;
-  calls: { args: string[]; stateHome: string; envNames: string[] }[];
+  calls: { args: string[]; stateHome: string; envNames: string[]; dockerSize?: string }[];
 }
 
 function run(args: string[], options: { cwd?: string; env?: Record<string, string>; input?: string } = {}): Run {
@@ -457,6 +458,17 @@ describe("wrapper and the plugin's sandbox operations", () => {
       // The configured mounts it got: the missing one was skipped.
       mounts: [`${home}:ro`],
     });
+  });
+
+  it("sizes the VM's Docker disk at creation only, and records the resources it used", () => {
+    const sandbox = spec({ cpus: 4, dockerDisk: "60g" });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(0);
+    const sized = result.calls.filter((call) => call.dockerSize !== undefined);
+    expect(sized.map((call) => [call.args[0], call.dockerSize])).toEqual([["create", "60g"]]);
+    expect(result.calls.find((call) => call.args[0] === "create")?.args).toEqual(expect.arrayContaining(["--cpus", "4"]));
+    const state = JSON.parse(readFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), "utf8"));
+    expect(state).toMatchObject({ memory: "3072m", cpus: 4, dockerDisk: "60g" });
   });
 
   it("mounts into the guest's home at every launch", () => {

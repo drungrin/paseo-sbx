@@ -43,6 +43,7 @@ export const statusRpc = defineRpc({
     wrapperPath: z.string(),
     envFile: z.string(),
     hostMemoryMiB: z.number(),
+    hostCpus: z.number(),
     defaultMemoryMiB: z.number(),
   }),
 });
@@ -98,6 +99,11 @@ export const describeSandboxRpc = defineRpc({
     repoName: z.string(),
     memoryMiB: z.number(),
     repoMemoryGiB: z.number().nullable(),
+    /** CPUs a sandbox created now gets; 0 is every host CPU. */
+    cpus: z.number(),
+    repoCpus: z.number().nullable(),
+    /** Whether the sandbox has the memory, CPUs and Docker disk configured now; null when unknown. */
+    resourcesApplied: z.boolean().nullable(),
     /** Resident memory of the running VM; null when stopped or unknown. */
     rssMiB: z.number().nullable(),
     workspace: z.string(),

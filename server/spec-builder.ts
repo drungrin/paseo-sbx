@@ -82,6 +82,21 @@ export function readEnvFile(path: string): Record<string, string> {
   }
 }
 
+/** The variables file, `~/` expanded; empty settings use the plugin's default path. */
+export function envFilePath(settings: SandboxSettings, paths: PluginPaths, home = homedir()): string {
+  const file = settings.envFile.trim();
+  if (!file) return paths.defaultEnvFile;
+  return file === "~" || file.startsWith("~/") ? join(home, file.slice(1)) : file;
+}
+
+/** Appends an entry to git's config-by-environment list (`GIT_CONFIG_COUNT`, `_KEY_<n>`, `_VALUE_<n>`). */
+function addGitConfig(env: Record<string, string>, key: string, value: string): void {
+  const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+  env[`GIT_CONFIG_KEY_${count}`] = key;
+  env[`GIT_CONFIG_VALUE_${count}`] = value;
+  env.GIT_CONFIG_COUNT = String(count + 1);
+}
+
 export function forwardedEnvNames(settings: SandboxSettings, repoKey: string): string[] {
   return [...new Set([...settings.envNames, ...(settings.repos[repoKey]?.envNames ?? [])])];
 }
@@ -201,7 +216,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
   if (input.prepare !== false) prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared);
 
-  const fileValues = readEnvFile(settings.envFile || paths.defaultEnvFile);
+  const fileValues = readEnvFile(envFilePath(settings, paths, home));
   const forwarded: Record<string, string> = {};
   const missingEnv: string[] = [];
   const rejectedEnv: string[] = [];
@@ -219,6 +234,11 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   if (gsdPath?.enabled && forwarded.GSD_PATH_WORKTREE_ROOT === undefined) {
     forwarded.GSD_PATH_WORKTREE_ROOT = env.GSD_PATH_WORKTREE_ROOT || join(home, ".gsd-path", "projects");
   }
+  if (settings.githubHttps) {
+    for (const remote of ["git@github.com:", "ssh://git@github.com/"]) {
+      addGitConfig(forwarded, "url.https://github.com/.insteadOf", remote);
+    }
+  }
 
   const spec: SandboxSpec = {
     version: SPEC_VERSION,
@@ -235,7 +255,8 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     mounts,
     homeMounts,
     memory: `${memoryMiB(settings, repo, input.hostMemoryBytes ?? totalmem())}m`,
-    cpus: settings.cpus,
+    cpus: repo?.cpus ?? settings.cpus,
+    dockerDisk: settings.dockerDiskGiB > 0 ? `${settings.dockerDiskGiB}g` : null,
     networkAllow: settings.networkAllow,
     forwardPorts: settings.forwardPorts,
     autoPublish: repo?.autoPublish ?? [],
