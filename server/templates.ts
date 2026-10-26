@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { totalmem } from "node:os";
 import type { SandboxSettings } from "../shared/settings";
 import { TEMPLATE_TAG_PATTERN, memoryMiB, normalizeTemplateRef, templatePrepName } from "../shared/spec";
@@ -6,9 +5,9 @@ import type { ServerDeps } from "./hooks";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
-import { assertSandboxName, listSandboxes, removeSandbox, runSbxOk } from "./sbx";
+import { assertSandboxName, listSandboxes, removeSandbox, runSbxOk, stopSandboxLocked } from "./sbx";
 import { templateFor } from "./spec-builder";
-import { writeSandboxState } from "./state";
+import { liveLeases, writeSandboxState } from "./state";
 
 export interface TemplateInfo {
   /** `repository:tag` as `sbx template ls` reports it. */
@@ -55,64 +54,31 @@ export function templateUsers(settings: SandboxSettings, ref: string): string[] 
   return users;
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
-
 /**
- * Runs an sbx command on a pseudo-terminal. sbx 0.49's `template save` queries the terminal and
- * refuses to run without one, asking for a --force flag the command does not have.
+ * Saves the sandbox's filesystem as a template in the Paseo instance; returns its reference.
+ * sbx saves only a stopped sandbox (it asks to stop a running one, and without a terminal that
+ * question fails), so the sandbox is stopped first, shutting its Docker down cleanly. Stopping
+ * would cut running sessions off: the plugin refuses while any is alive.
  */
-function runSbxInPty(paths: PluginPaths, args: string[], timeoutMs: number): Promise<{ code: number; output: string }> {
-  return new Promise((resolve, reject) => {
-    const command = ["sbx", ...args].map(shellQuote).join(" ");
-    const child = spawn("script", ["-qec", command, "/dev/null"], {
-      env: { ...process.env, XDG_STATE_HOME: paths.stateHome },
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
-    });
-    let output = "";
-    const collect = (chunk: Buffer) => {
-      output += chunk.toString();
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    const timer = setTimeout(() => {
-      if (child.pid) process.kill(-child.pid, "SIGKILL");
-    }, timeoutMs);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(
-        (error as NodeJS.ErrnoException).code === "ENOENT"
-          ? new Error("saving a template needs the util-linux `script` command")
-          : error,
-      );
-    });
-    child.on("exit", (code, signal) => {
-      clearTimeout(timer);
-      child.stdin.destroy();
-      const clean = output.replace(ANSI, "").replace(/\r/g, "\n");
-      if (signal) reject(new Error(`sbx ${args[0]} ${args[1] ?? ""} timed out`));
-      else resolve({ code: code ?? 1, output: clean });
-    });
-  });
-}
-
-/** Saves the sandbox's filesystem as a template in the Paseo instance; returns its reference. */
 export async function saveTemplate(paths: PluginPaths, name: string, tag: string): Promise<string> {
   assertSandboxName(name);
   if (!TEMPLATE_TAG_PATTERN.test(tag)) throw new Error(`invalid template tag: ${tag}`);
   return withSandboxLock(paths, name, newLockToken(), async () => {
-    const result = await runSbxInPty(paths, ["template", "save", name, tag], 600_000);
-    const saved = /Saved template (\S+)/.exec(result.output)?.[1];
-    if (result.code !== 0 || !saved) {
-      throw new Error(`sbx template save failed (exit ${result.code}): ${result.output.trim().slice(-800)}`);
+    const sessions = liveLeases(paths, name);
+    if (sessions.length > 0) {
+      throw new Error(
+        `saving stops ${name}, and ${sessions.length} session(s) still run in it: archive its agents, or use Prepare template`,
+      );
     }
+    await stopSandboxLocked(paths, name);
+    const stdout = await runSbxOk(paths, ["template", "save", name, tag], "sbx template save", 600_000);
+    const saved = /Saved template (\S+)/.exec(stdout.replace(ANSI, ""))?.[1];
+    if (!saved) throw new Error(`sbx template save did not report the template: ${stdout.trim().slice(-400)}`);
     return saved;
   });
 }
+
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
 export async function removeTemplate(paths: PluginPaths, settings: SandboxSettings, ref: string): Promise<void> {
   const users = templateUsers(settings, ref);

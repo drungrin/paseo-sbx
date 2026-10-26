@@ -211,10 +211,23 @@ describe("ports", () => {
 });
 
 describe("templates", () => {
-  it("saves a sandbox as a template through a pseudo-terminal", async () => {
+  it("stops the sandbox, shutting its Docker down, then saves it as a template", async () => {
     const name = await createdSandbox();
+    fake.clearCalls();
     expect(await saveTemplate(paths, name, "app:v1")).toBe("docker.io/library/app:v1");
+    const verbs = fake.calls().map((call) => call.args.slice(0, 3).join(" "));
+    expect(verbs.indexOf(`exec -u root`)).toBeLessThan(verbs.indexOf(`stop ${name}`));
+    expect(verbs.indexOf(`stop ${name}`)).toBeLessThan(verbs.indexOf(`template save ${name}`));
     await expect(saveTemplate(paths, name, "Bad Tag")).rejects.toThrow("invalid template tag");
+  });
+
+  it("will not stop a sandbox with running sessions to save it", async () => {
+    const name = await createdSandbox();
+    const leases = join(paths.locksDir, `${name}.leases`);
+    mkdirSync(leases, { recursive: true });
+    writeFileSync(join(leases, String(process.pid)), JSON.stringify({ pid: process.pid, start: processStart(process.pid), agentId: null }));
+    await expect(saveTemplate(paths, name, "app:v1")).rejects.toThrow("session(s) still run in it");
+    expect(fake.calls().some((call) => call.args[0] === "stop")).toBe(false);
   });
 
   it("will not remove a template that settings still use", async () => {

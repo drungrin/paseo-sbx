@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 
 // A fake sbx that keeps sandboxes and templates in a JSON file, logs every call with the names in
 // its environment, and runs `exec` commands locally with a VM-like environment: PATH plus the
-// `--env-file` values and the `-e NAME` variables only. Like sbx 0.49, `template save` refuses to
-// run without a terminal on stdin.
+// `--env-file` values and the `-e NAME` variables only. Like sbx 0.49, `template save` refuses a
+// running sandbox, and `exec` or `ports --publish` start a stopped one.
 export const FAKE_SBX = `#!/usr/bin/env node
 const fs = require('node:fs');
 const cp = require('node:child_process');
@@ -13,11 +13,13 @@ const stateFile = process.env.FAKE_SBX_STATE;
 const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
 state.sandboxes = state.sandboxes || [];
 state.templates = state.templates || [];
+state.stopped = state.stopped || [];
+const start = (name) => { state.stopped = state.stopped.filter((entry) => entry !== name); };
 fs.appendFileSync(process.env.FAKE_SBX_LOG, JSON.stringify({ args, stateHome: process.env.XDG_STATE_HOME, envNames: Object.keys(process.env) }) + '\\n');
 const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
 if (args[0] === 'ls') {
   if (process.env.FAKE_SBX_LS_ERROR) { process.stderr.write(process.env.FAKE_SBX_LS_ERROR); process.exit(1); }
-  process.stdout.write(JSON.stringify(state.sandboxes.map((name) => ({ name, status: 'running' }))));
+  process.stdout.write(JSON.stringify(state.sandboxes.map((name) => ({ name, status: state.stopped.includes(name) ? 'stopped' : 'running' }))));
 } else if (args[0] === 'create') {
   if (process.env.FAKE_SBX_FAIL_CREATE) { process.stderr.write('create refused'); process.exit(3); }
   state.sandboxes.push(args[args.indexOf('--name') + 1]);
@@ -25,7 +27,10 @@ if (args[0] === 'ls') {
 } else if (args[0] === 'rm') {
   state.sandboxes = state.sandboxes.filter((name) => name !== args[args.length - 1]);
   save();
-} else if (args[0] === 'stop' || args[0] === 'policy') {
+} else if (args[0] === 'stop') {
+  if (!state.stopped.includes(args[1])) state.stopped.push(args[1]);
+  save();
+} else if (args[0] === 'policy') {
   // accepted
 } else if (args[0] === 'ports') {
   state.ports = state.ports || {};
@@ -35,6 +40,7 @@ if (args[0] === 'ls') {
   if (args[2] === '--json') {
     process.stdout.write(JSON.stringify(bindings));
   } else if (args[2] === '--publish') {
+    start(name);
     const parts = args[3].split(':');
     const sandboxPort = Number(parts.pop());
     const hostPort = parts.length > 0 ? Number(parts.pop()) : 32768 + bindings.length;
@@ -50,8 +56,11 @@ if (args[0] === 'ls') {
 } else if (args[0] === 'template' && args[1] === 'ls') {
   process.stdout.write(JSON.stringify(state.templates));
 } else if (args[0] === 'template' && args[1] === 'save') {
-  if (!process.stdin.isTTY) { process.stderr.write('error: stdin is not a terminal; pass --force to skip the confirmation'); process.exit(1); }
   const [name, tag] = [args[2], args[3]];
+  if (!state.stopped.includes(name)) {
+    process.stderr.write(process.stdin.isTTY ? 'Sandbox ' + name + ' is running and must be stopped before saving. Stop it now? (y/N)' : 'error: stdin is not a terminal; pass --force to skip the confirmation');
+    process.exit(1);
+  }
   if (!state.sandboxes.includes(name)) { process.stderr.write('no such sandbox'); process.exit(1); }
   const [repo, version] = tag.includes(':') ? tag.split(':') : [tag, 'latest'];
   state.templates.push({ id: Math.random().toString(16).slice(2, 14), repository: 'docker.io/library/' + repo, tag: version });
@@ -82,6 +91,8 @@ if (args[0] === 'ls') {
     break;
   }
   if (!state.sandboxes.includes(args[i])) { process.stderr.write('no such sandbox'); process.exit(1); }
+  start(args[i]);
+  save();
   // The plugin's guest helpers (relays, the guest agent) are long-running guest processes: do not
   // start them on the test host.
   if (args[i + 1] === 'sh' && String(args[i + 3] || '').includes('guest-agent.py')) process.exit(0);

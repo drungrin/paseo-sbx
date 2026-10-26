@@ -50,8 +50,8 @@ export class SbxError extends Error {
   }
 }
 
-export async function runSbxOk(paths: PluginPaths, args: string[], operation: string): Promise<string> {
-  const result = await runSbx(paths, args);
+export async function runSbxOk(paths: PluginPaths, args: string[], operation: string, timeoutMs?: number): Promise<string> {
+  const result = await runSbx(paths, args, timeoutMs);
   if (result.code !== 0) throw new SbxError(operation, result);
   return result.stdout;
 }
@@ -121,16 +121,16 @@ export function assertSandboxName(name: string): void {
  */
 export async function stopSandbox(paths: PluginPaths, name: string): Promise<{ graceful: boolean }> {
   assertSandboxName(name);
-  return withSandboxLock(paths, name, newLockToken(), async () => {
-    const entries = JSON.parse((await runSbxOk(paths, ["ls", "--json"], "sbx ls")) || "[]") as SbxListEntry[];
-    if (entries.find((entry) => entry.name === name)?.status !== "running") {
-      await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
-      return { graceful: true };
-    }
-    const shutdown = await runSbx(paths, ["exec", "-u", "root", name, "sh", "-c", DOCKERD_SHUTDOWN], 30_000);
-    await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
-    return { graceful: shutdown.code === 0 };
-  });
+  return withSandboxLock(paths, name, newLockToken(), () => stopSandboxLocked(paths, name));
+}
+
+/** `stopSandbox` for callers that already hold the sandbox lock. */
+export async function stopSandboxLocked(paths: PluginPaths, name: string): Promise<{ graceful: boolean }> {
+  const entries = JSON.parse((await runSbxOk(paths, ["ls", "--json"], "sbx ls")) || "[]") as SbxListEntry[];
+  if (entries.find((entry) => entry.name === name)?.status !== "running") return { graceful: true };
+  const shutdown = await runSbx(paths, ["exec", "-u", "root", name, "sh", "-c", DOCKERD_SHUTDOWN], 30_000);
+  await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
+  return { graceful: shutdown.code === 0 };
 }
 
 // SIGTERM to the guest's dockerd, then up to 20 s for it to stop its containers and exit.
