@@ -172,13 +172,15 @@ function readLockOwner(lockDir) {
 // that run works inside the held lock instead of waiting for it.
 function withLock(lockDir, fn) {
   const token = process.env.PASEO_SBX_LOCK_TOKEN;
+  let held = false;
   if (token) {
     try {
-      if (readLockOwner(lockDir).token === token) return fn();
+      held = readLockOwner(lockDir).token === token;
     } catch (error) {
       // not held: take it normally
     }
   }
+  if (held) return fn();
   const owner = path.join(lockDir, 'owner');
   const deadline = Date.now() + 180000;
   for (;;) {

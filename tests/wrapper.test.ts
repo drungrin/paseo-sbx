@@ -494,6 +494,20 @@ describe("wrapper and the plugin's sandbox operations", () => {
     expect(existsSync(lockDir)).toBe(true);
   });
 
+  it("reports a failure inside the server's lock at once instead of waiting for that lock", () => {
+    const sandbox = spec();
+    const lockDir = join(sandbox.locksDir, sandbox.name);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "owner"), `${process.pid} server-token`);
+    const started = Date.now();
+    const result = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(sandbox), PASEO_SBX_LOCK_TOKEN: "server-token", FAKE_SBX_FAIL_CREATE: "1" },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("create refused");
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
   it("leases the sandbox for as long as a session runs", async () => {
     const session = startSession({ PASEO_AGENT_ID: "agent-7" });
     await waitForGuest();
