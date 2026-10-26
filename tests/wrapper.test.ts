@@ -67,7 +67,7 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
     binDir: join(state, "bin"),
     workspace,
     mounts: [join(root, "missing-mount"), `${home}:ro`],
-    homeLinks: [],
+    homeMounts: [],
     memory: "3072m",
     cpus: 0,
     networkAllow: ["**"],
@@ -459,14 +459,14 @@ describe("wrapper and the plugin's sandbox operations", () => {
     });
   });
 
-  it("links mounts into the guest's home at every launch", () => {
+  it("mounts into the guest's home at every launch", () => {
     const target = join(home, ".gsd-path");
-    const sandbox = spec({ homeLinks: [{ name: ".gsd-path", target }] });
+    const sandbox = spec({ homeMounts: [{ name: ".gsd-path", target }] });
     const result = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
     expect(result.status).toBe(0);
     const helpers = result.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh");
     expect(helpers?.args.slice(-2)).toEqual([".gsd-path", target]);
-    expect(helpers?.args[4]).toContain('sh "$dir/home-links.sh" "$@"');
+    expect(helpers?.args[4]).toContain('sh "$dir/home-mounts.sh" "$@"');
   });
 
   it("refuses a template the Paseo instance does not have, before creating anything", () => {

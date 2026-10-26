@@ -205,10 +205,11 @@ describe("buildSpec for GSD Path", () => {
       "claude",
     ]);
     // Only what you chose under your home: checkouts and Claude's config are reached by path.
-    expect(built.spec.homeLinks).toEqual([
+    expect(built.spec.homeMounts).toEqual([
       { name: ".config/gh", target: join(home, ".config", "gh") },
       { name: ".gsd-path", target: join(home, ".gsd-path") },
     ]);
+    expect(built.spec.env.GSD_PATH_WORKTREE_ROOT).toBe(join(home, ".gsd-path", "projects"));
     expect(built.gsdPath).toEqual({
       enabled: true,
       members: [
@@ -225,7 +226,8 @@ describe("buildSpec for GSD Path", () => {
     const settings = sandboxSettingsSchema.parse({ gsdPath: false, claudeShared: [] });
     const built = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
     expect(built.spec.mounts).toEqual([]);
-    expect(built.spec.homeLinks).toEqual([]);
+    expect(built.spec.homeMounts).toEqual([]);
+    expect(built.spec.env.GSD_PATH_WORKTREE_ROOT).toBeUndefined();
     expect(built.gsdPath?.enabled).toBe(false);
     expect(built.gsdPath?.members[0]).toEqual({ name: "code", path: member });
   });

@@ -27,10 +27,10 @@ export interface SandboxSpec {
   workspace: string;
   mounts: string[];
   /**
-   * Mounts under the host home also reached from the guest's home: `name` (relative to it) links to
-   * `target`, the mounted host path. Tools that look in `~` find them there.
+   * Mounts under the host home that also appear in the guest's home: `target`, the mounted host
+   * path, is bind-mounted at `name` relative to it. Tools that look in `~` find them there.
    */
-  homeLinks: HomeLink[];
+  homeMounts: HomeMount[];
   /** sbx `--memory` value. */
   memory: string;
   cpus: number;
@@ -42,7 +42,7 @@ export interface SandboxSpec {
   claudeConfigDir: string;
 }
 
-export interface HomeLink {
+export interface HomeMount {
   name: string;
   target: string;
 }

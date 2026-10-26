@@ -22,7 +22,7 @@ import {
   parseEnvFile,
   parseMount,
   sandboxIdentity,
-  type HomeLink,
+  type HomeMount,
   type MountEntry,
   type MountSource,
   type SandboxBinding,
@@ -155,7 +155,7 @@ export function copyHostTranscripts(hostClaudeDir: string, cwd: string, claudeCo
 }
 
 /** Mounts you chose, which tools may look for in `~`; checkouts and Claude's config are reached by path. */
-const LINKED_SOURCES: ReadonlySet<MountSource> = new Set(["settings", "repo", "gsd-path"]);
+const HOME_MOUNT_SOURCES: ReadonlySet<MountSource> = new Set(["settings", "repo", "gsd-path"]);
 
 export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   const env = input.env ?? process.env;
@@ -177,7 +177,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   add(settings.mounts, "settings");
   add(repo?.mounts ?? [], "repo");
   // A coordinator's agents work in its member checkouts and in worktrees under ~/.gsd-path, where
-  // the GSD Path runtime lives too. The guest's home links to it, since the runtime looks in `~`.
+  // the GSD Path runtime lives too. It also appears in the guest's home, where the runtime looks.
   const gsdPath = usesGsdPath(directory) ? { enabled: settings.gsdPath, members: gsdPathMembers(directory, home) } : null;
   if (gsdPath?.enabled) {
     requested.push({ path: join(home, ".gsd-path"), readOnly: false, source: "gsd-path" });
@@ -194,8 +194,8 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   if (settings.claudeShared.length > 0) requested.push({ path: paths.hostClaudeDir, readOnly: true, source: "claude" });
   const sourced = mergeMounts(requested).filter((mount) => !isWithin(mount.path, directory));
   const mounts = sourced.map(formatMount);
-  const homeLinks: HomeLink[] = sourced
-    .filter((mount) => LINKED_SOURCES.has(mount.source) && mount.path !== home && isWithin(mount.path, home))
+  const homeMounts: HomeMount[] = sourced
+    .filter((mount) => HOME_MOUNT_SOURCES.has(mount.source) && mount.path !== home && isWithin(mount.path, home))
     .map((mount) => ({ name: relative(home, mount.path), target: mount.path }));
 
   const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
@@ -214,6 +214,11 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     if (value === undefined) missingEnv.push(name);
     else forwarded[name] = value;
   }
+  // GSD Path places new worktrees under `~/.gsd-path/projects`, which in the guest is a path your
+  // git cannot reach from the host: keep them at the host's.
+  if (gsdPath?.enabled && forwarded.GSD_PATH_WORKTREE_ROOT === undefined) {
+    forwarded.GSD_PATH_WORKTREE_ROOT = env.GSD_PATH_WORKTREE_ROOT || join(home, ".gsd-path", "projects");
+  }
 
   const spec: SandboxSpec = {
     version: SPEC_VERSION,
@@ -228,7 +233,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     binDir: paths.binDir,
     workspace: directory,
     mounts,
-    homeLinks,
+    homeMounts,
     memory: `${memoryMiB(settings, repo, input.hostMemoryBytes ?? totalmem())}m`,
     cpus: settings.cpus,
     networkAllow: settings.networkAllow,

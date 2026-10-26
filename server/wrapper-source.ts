@@ -517,14 +517,14 @@ function writeRelays(spec, relays, internalPorts, sessionPorts) {
   fs.renameSync(file + '.tmp', file);
 }
 
-// Arguments for home-links.sh: NAME TARGET pairs.
-function homeLinkArgs(spec) {
+// Arguments for home-mounts.sh: NAME TARGET pairs.
+function homeMountArgs(spec) {
   const pairs = [];
-  for (const link of spec.homeLinks || []) pairs.push(link.name, link.target);
+  for (const mount of spec.homeMounts || []) pairs.push(mount.name, mount.target);
   return pairs;
 }
 
-// One exec per launch: links mounts into the guest's home, relays guest loopback ports to the
+// One exec per launch: mounts into the guest's home, relays guest loopback ports to the
 // host (Paseo's MCP server, loopback API URLs) and keeps the guest agent running. The VM stops
 // 30 s after its last session and takes the relays and the agent with it, so this runs per launch.
 function ensureGuestHelpers(spec, ports) {
@@ -533,7 +533,7 @@ function ensureGuestHelpers(spec, ports) {
     'state=$1',
     'ports=$2',
     'shift 2',
-    'sh "$dir/home-links.sh" "$@"',
+    'sh "$dir/home-mounts.sh" "$@"',
     'missing=""',
     'if [ -n "$ports" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $ports); fi',
     'if [ -n "$missing" ]; then nohup python3 "$dir/loopback-forward.py" $missing >>/tmp/paseo-sbx-forward.log 2>&1 & fi',
@@ -543,7 +543,7 @@ function ensureGuestHelpers(spec, ports) {
   ].join('\n');
   const output = sbxOk(
     spec,
-    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' ')].concat(homeLinkArgs(spec)),
+    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' ')].concat(homeMountArgs(spec)),
     'guest helpers',
   );
   for (const line of output.split('\n')) if (line.trim()) log(line.trim());
@@ -683,7 +683,7 @@ function main() {
   writeRelays(spec, relays, ports, sessionPorts);
   if (args[0] === ENSURE_FLAG) {
     // Publications need their relays now; without any, preparing a sandbox does not enter it.
-    // Home links then wait for the first session, or for a shell from the workspace panel.
+    // Home mounts then wait for the first session, or for a shell from the workspace panel.
     if (relays.length > 0) ensureGuestHelpers(spec, []);
     return;
   }
@@ -712,23 +712,36 @@ export function launcherSource(nodeBinary: string, wrapperPath: string): string 
 }
 
 /**
- * Links mounts under the host home into the guest's home: arguments are NAME TARGET pairs, NAME
- * relative to $HOME. Runs in the guest at every launch; an existing file or directory wins.
+ * Bind-mounts host-home mounts into the guest's home: arguments are NAME TARGET pairs, NAME relative
+ * to $HOME. Runs as the sandbox user at every launch (binds do not survive a VM restart), with sudo
+ * for the mount itself. Not a symlink: GSD Path refuses symlinked runtime storage. Whatever the
+ * template or sbx already put at NAME wins.
  */
-export const HOME_LINKS_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+export const HOME_MOUNTS_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
 while [ $# -ge 2 ]; do
-  link="$HOME/$1"
+  path="$HOME/$1"
   target=$2
   shift 2
-  # A mount sbx skipped (missing on the host) gets no link.
+  # A mount sbx skipped (missing on the host) gets nothing.
   [ -e "$target" ] || continue
-  if [ -L "$link" ]; then
-    [ "$(readlink "$link")" = "$target" ] && continue
-  elif [ -e "$link" ]; then
-    echo "$link exists in the sandbox; not linking it to $target"
-    continue
+  # Earlier plugin versions linked it instead.
+  if [ -L "$path" ] && [ "$(readlink "$path")" = "$target" ]; then rm -f "$path"; fi
+  # Bound already since the VM started. mountpoint follows links, hence the -L.
+  [ -L "$path" ] || ! mountpoint -q "$path" 2>/dev/null || continue
+  if [ -d "$target" ]; then
+    if [ -L "$path" ] || { [ -e "$path" ] && { [ ! -d "$path" ] || [ -n "$(ls -A "$path")" ]; }; }; then
+      echo "$path already exists in the sandbox; not mounting $target there"
+      continue
+    fi
+    mkdir -p "$path"
+  else
+    if [ -L "$path" ] || { [ -e "$path" ] && { [ ! -f "$path" ] || [ -s "$path" ]; }; }; then
+      echo "$path already exists in the sandbox; not mounting $target there"
+      continue
+    fi
+    mkdir -p "$(dirname "$path")" && : >>"$path"
   fi
-  mkdir -p "$(dirname "$link")" && ln -sfn "$target" "$link"
+  sudo -n mount --bind "$target" "$path" || echo "could not mount $target at $path: it needs passwordless sudo in the sandbox"
 done
 `;
 

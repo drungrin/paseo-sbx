@@ -207,7 +207,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths });
     return runOperation("prepare", spec.name, async () => {
       await prepareSandbox(paths, spec);
-      return { name: spec.name, ...shellCommand(paths, spec.name, { homeLinks: spec.homeLinks }) };
+      return { name: spec.name, ...shellCommand(paths, spec.name, { homeMounts: spec.homeMounts }) };
     });
   });
 

@@ -684,7 +684,7 @@ function GsdPathSection({ styles, gsdPath }: { styles: Styles; gsdPath: NonNulla
       </Card>
       <Text style={styles.muted}>
         {gsdPath.enabled
-          ? "The sandbox mounts ~/.gsd-path and the member checkouts writable; the agent's ~/.gsd-path links to yours."
+          ? "The sandbox mounts ~/.gsd-path, also in the agent's home, and the member checkouts writable. New worktrees go under your ~/.gsd-path/projects."
           : "GSD Path mounts are off in the plugin settings."}
       </Text>
     </Section>

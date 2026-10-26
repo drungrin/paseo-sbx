@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { SPEC_ENV, type HomeLink, type SandboxSpec } from "../shared/spec";
+import { SPEC_ENV, type HomeMount, type SandboxSpec } from "../shared/spec";
 import type { SandboxSummary } from "../shared/rpc";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
@@ -191,18 +191,18 @@ export function prepareSandbox(paths: PluginPaths, spec: SandboxSpec, lockToken?
 
 /**
  * A login shell in the sandbox; `noHistory` keeps it from writing a shell history to save in a
- * template. `homeLinks` are applied first, as a session's launch does.
+ * template. `homeMounts` are applied first, as a session's launch does.
  */
 export function shellCommand(
   paths: PluginPaths,
   name: string,
-  options: { noHistory?: boolean; homeLinks?: readonly HomeLink[] } = {},
+  options: { noHistory?: boolean; homeMounts?: readonly HomeMount[] } = {},
 ): { command: string; args: string[] } {
   const historyArgs = options.noHistory ? ["-e", "HISTFILE=/dev/null"] : [];
-  const links = (options.homeLinks ?? []).flatMap((link) => [link.name, link.target]);
+  const mounts = (options.homeMounts ?? []).flatMap((mount) => [mount.name, mount.target]);
   const shell =
-    links.length > 0
-      ? ["sh", "-c", 'sh "$0" "$@"; exec bash -l', join(paths.binDir, "home-links.sh"), ...links]
+    mounts.length > 0
+      ? ["sh", "-c", 'sh "$0" "$@"; exec bash -l', join(paths.binDir, "home-mounts.sh"), ...mounts]
       : ["bash", "-l"];
   return {
     command: "env",

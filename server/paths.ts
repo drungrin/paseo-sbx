@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   FORWARDER_SOURCE,
   GUEST_AGENT_SOURCE,
-  HOME_LINKS_SOURCE,
+  HOME_MOUNTS_SOURCE,
   SUPERVISOR_SOURCE,
   WAIT_PORTS_SOURCE,
   WRAPPER_SOURCE,
@@ -58,7 +58,7 @@ function binFiles(paths: PluginPaths) {
     { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },
     { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
     { name: "guest-agent.py", source: GUEST_AGENT_SOURCE, mode: 0o644 },
-    { name: "home-links.sh", source: HOME_LINKS_SOURCE, mode: 0o644 },
+    { name: "home-mounts.sh", source: HOME_MOUNTS_SOURCE, mode: 0o644 },
   ];
 }
 
