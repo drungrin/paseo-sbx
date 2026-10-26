@@ -29,6 +29,8 @@ export function useStyles(theme: Theme, compact: boolean) {
         borderTopColor: theme.colors.border,
       },
       firstRow: { borderTopWidth: 0 },
+      /** A row whose actions wrap below its text, for narrow layouts. */
+      stackedRow: { flexDirection: "column" as const, alignItems: "flex-start" as const },
       label: { color: theme.colors.foreground, fontSize: 13 },
       value: { color: theme.colors.foregroundMuted, fontSize: 13, flexShrink: 1, textAlign: "right" as const },
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 },
@@ -155,6 +157,23 @@ export function ConfirmButton({
       }}
     />
   );
+}
+
+/** `docker.io/library/name:tag` as `name:tag`, the way you typed it. */
+export function shortRef(ref: string): string {
+  return ref.replace(/^docker\.io\/library\//, "");
+}
+
+/** A repository key as its path: `git:/p/app/.git` → `/p/app`. */
+export function repoPath(repoKey: string): string {
+  return repoKey.replace(/^(git|dir):/, "").replace(/\/\.git$/, "");
+}
+
+/** An agent's state in a word: working, idle, or its status when it is neither. */
+export function agentState(agent: { archived: boolean; activeTurn: boolean; status: string }): string {
+  if (agent.archived) return "archived";
+  if (agent.activeTurn) return "working";
+  return agent.status === "idle" ? "idle" : `idle (${agent.status})`;
 }
 
 export function formatMiB(mib: number): string {

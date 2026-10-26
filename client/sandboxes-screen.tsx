@@ -20,8 +20,11 @@ import {
   Row,
   Screen,
   Section,
+  agentState,
   errorMessage,
   formatMiB,
+  repoPath,
+  shortRef,
   useStyles,
   type Styles,
 } from "./ui";
@@ -145,7 +148,7 @@ function MemorySection({ styles }: { styles: Styles }) {
             <View key={agent.id} style={styles.row}>
               <View style={{ flexShrink: 1 }}>
                 <Text style={styles.label}>{agent.title ?? agent.id}</Text>
-                <Text style={styles.muted}>{agent.activeTurn ? "working" : `idle (${agent.status})`}</Text>
+                <Text style={styles.muted}>{agentState(agent)}</Text>
               </View>
               {agent.activeTurn ? null : (
                 <ConfirmButton
@@ -202,11 +205,11 @@ function TemplateCard({
 }) {
   return (
     <Card styles={styles}>
-      <Row styles={styles} label={template.ref.replace(/^docker\.io\/library\//, "")} first>
+      <Row styles={styles} label={shortRef(template.ref)} first>
         {formatBytes(template.sizeBytes)}
       </Row>
       <Row styles={styles} label="Used by">
-        {template.users.length === 0 ? "-" : template.users.map((user) => (user === "default" ? "default" : user.replace(/^(git|dir):/, ""))).join(", ")}
+        {template.users.length === 0 ? "-" : template.users.map((user) => (user === "default" ? "default" : repoPath(user))).join(", ")}
       </Row>
       <View style={[styles.row, styles.actions]}>
         <ConfirmButton
@@ -273,7 +276,7 @@ function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSumm
       </Row>
       {sandbox.template ? (
         <Row styles={styles} label="Template">
-          <Text style={styles.mono}>{sandbox.template}</Text>
+          <Text style={styles.mono}>{shortRef(sandbox.template)}</Text>
         </Row>
       ) : null}
       {sandbox.memory ? (
@@ -284,7 +287,7 @@ function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSumm
       <Row styles={styles} label="Workspace">
         <Text style={styles.mono}>{sandbox.workspaces[0] ?? "-"}</Text>
       </Row>
-      <View style={[styles.row, styles.actions]}>
+      <View style={[styles.row, styles.actions, { justifyContent: "flex-start" }]}>
         <Button
           styles={styles}
           label="Stop"

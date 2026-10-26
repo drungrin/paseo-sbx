@@ -25,7 +25,20 @@ import {
   useStatus,
   useTemplates,
 } from "./queries";
-import { Button, Card, ConfirmButton, Row, Screen, Section, errorMessage, formatMiB, useStyles, type Styles } from "./ui";
+import {
+  Button,
+  Card,
+  ConfirmButton,
+  Row,
+  Screen,
+  Section,
+  agentState,
+  errorMessage,
+  formatMiB,
+  shortRef,
+  useStyles,
+  type Styles,
+} from "./ui";
 
 type Description = NonNullable<ReturnType<typeof useSandboxDescription>["data"]>;
 
@@ -82,7 +95,7 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
               {data.repoName}
             </Row>
             <Row styles={styles} label="Template">
-              <Text style={styles.mono}>{data.template.sandbox ?? (data.status ? "sbx image" : "-")}</Text>
+              <Text style={styles.mono}>{data.template.sandbox ? shortRef(data.template.sandbox) : data.status ? "sbx image" : "-"}</Text>
             </Row>
             <Row styles={styles} label="Memory">
               {data.rssMiB === null ? `limit ${formatMiB(data.memoryMiB)}` : `${formatMiB(data.rssMiB)} of ${formatMiB(data.memoryMiB)}`}
@@ -146,7 +159,7 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
       </Section>
 
       {data && data.agents.length > 0 ? <AgentsSection styles={styles} agents={data.agents} /> : null}
-      {data ? <ServicesSection styles={styles} data={data} /> : null}
+      {data ? <ServicesSection styles={styles} data={data} compact={layout.compact} /> : null}
       {data ? <TemplateSection styles={styles} data={data} workspaceId={workspaceId} directory={directory} /> : null}
       {data ? (
         // Keyed so a different repo or a saved value starts from a fresh draft.
@@ -198,7 +211,7 @@ function TemplateDivergence({ styles, data }: { styles: Styles; data: Descriptio
   if (template.status === "diverged") {
     return (
       <Text style={styles.error}>
-        {`This sandbox was created from ${template.sandbox ?? "the sbx image"}; the repository now uses ${template.configured ?? "the sbx image"}. Recreate it to apply.`}
+        {`This sandbox was created from ${template.sandbox ? shortRef(template.sandbox) : "the sbx image"}; the repository now uses ${template.configured ? shortRef(template.configured) : "the sbx image"}. Recreate it to apply.`}
       </Text>
     );
   }
@@ -206,12 +219,6 @@ function TemplateDivergence({ styles, data }: { styles: Styles; data: Descriptio
     return <Text style={styles.muted}>The template this sandbox was created from is unknown.</Text>;
   }
   return null;
-}
-
-function agentState(agent: BoundAgentInfo): string {
-  if (agent.archived) return "archived";
-  if (agent.activeTurn) return "working";
-  return `idle (${agent.status})`;
 }
 
 function AgentsSection({ styles, agents }: { styles: Styles; agents: BoundAgentInfo[] }) {
@@ -253,7 +260,7 @@ function hostBinding(publication: Description["services"]["publications"][number
   return publication.allInterfaces ? `port ${publication.hostPort} on every host address` : `127.0.0.1:${publication.hostPort}`;
 }
 
-function ServicesSection({ styles, data }: { styles: Styles; data: Description }) {
+function ServicesSection({ styles, data, compact }: { styles: Styles; data: Description; compact: boolean }) {
   const invalidate = useInvalidateAll();
   const publishRpc = useRpc(publishPortRpc);
   const unpublishRpc = useRpc(unpublishPortRpc);
@@ -359,7 +366,10 @@ function ServicesSection({ styles, data }: { styles: Styles; data: Description }
       {services.publications.length > 0 ? (
         <Card styles={styles}>
           {services.publications.map((publication, index) => (
-            <View key={publication.guestPort} style={[styles.row, index === 0 ? styles.firstRow : null]}>
+            <View
+              key={publication.guestPort}
+              style={[styles.row, index === 0 ? styles.firstRow : null, compact ? styles.stackedRow : null]}
+            >
               <View style={{ flexShrink: 1 }}>
                 <Text style={styles.label}>{`Guest port ${publication.guestPort}`}</Text>
                 <Text style={publication.hostPort === null ? styles.error : styles.mono}>{hostBinding(publication)}</Text>
@@ -428,12 +438,13 @@ function TemplateSection({
     onSettled: invalidate,
   });
   const [selectError, setSelectError] = useState<string | null>(null);
+  const [saveWorking, setSaveWorking] = useState(false);
 
   const globalTemplate = settings.status === "ready" ? settings.values.template : "";
   const custom = (templates.data?.templates ?? []).filter((template) => !template.base);
   const options = [
     { label: globalTemplate ? `Default (${globalTemplate})` : "Default (sbx image)", value: "" },
-    ...custom.map((template) => ({ label: template.ref.replace(/^docker\.io\/library\//, ""), value: template.ref })),
+    ...custom.map((template) => ({ label: shortRef(template.ref), value: template.ref })),
   ];
   if (repo?.template && !options.some((option) => option.value === repo.template)) {
     options.push({ label: `${repo.template} (missing)`, value: repo.template });
@@ -497,17 +508,23 @@ function TemplateSection({
       {prepare.isPending ? <Text style={styles.muted}>Preparing the sandbox…</Text> : null}
       {prepare.error ? <Text style={styles.error}>{errorMessage(prepare.error)}</Text> : null}
 
-      {data.status ? (
+      {data.status && !saveWorking ? (
+        <View style={styles.actions}>
+          <Button styles={styles} label="Save this sandbox as template…" onPress={() => setSaveWorking(true)} />
+        </View>
+      ) : null}
+      {data.status && saveWorking ? (
         <SaveTemplateForm
           styles={styles}
           repoName={data.repoName}
           pending={saveTemplate.isPending}
           error={saveTemplate.error}
           submitLabel="Save this sandbox as template"
-          warning="The template captures this sandbox's whole filesystem, including /home/agent: shell history, caches and any login tokens stored there."
+          warning="Saving stops this sandbox, and needs every agent in it archived. The template captures its whole filesystem, including /home/agent: shell history, caches and any login tokens stored there."
           onSubmit={async (tag, useForRepo) => {
             const { ref } = await saveTemplate.mutateAsync({ name: data.name, tag });
             if (useForRepo) await save({ template: ref });
+            setSaveWorking(false);
           }}
         />
       ) : null}

@@ -191,7 +191,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput
             label="Extra mounts"
-            hint="One per line, absolute or ~/ paths. Append :ro for read-only. Toolchains and shared tool state go here."
+            hint="One per line, absolute or ~/ paths. Append :ro for read-only. Shared tool state and credentials go here; install tools in a template instead."
             initialValue={draft.mounts}
             placeholder="~/.gsd-path"
             onChangeText={update("mounts")}
@@ -236,7 +236,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
       </SettingsSection>
 
       <SettingsCard>
-        <SettingsRow label="Changes to mounts, memory and CPUs apply to sandboxes created afterwards." />
+        <SettingsRow label="Template, mounts, memory and CPUs apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them." />
         <SettingsAction
           label={error ?? settings.saveError ?? "Save settings"}
           actionLabel={settings.saving ? "Saving…" : "Save"}
