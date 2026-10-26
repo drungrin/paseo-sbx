@@ -367,19 +367,25 @@ function detectPorts(spec, env) {
     .sort(function (a, b) { return a - b; });
 }
 
-// Reconciles the sandbox's network rules with the spec, revoking rules it no longer lists.
-function ensurePolicy(spec, ports) {
+// Reconciles the sandbox's network rules with the spec, revoking rules it no longer lists. Only
+// a session sees every loopback port (Paseo's MCP server is in its arguments), so the ensure step
+// the plugin runs on its own keeps the host port rules a session added.
+function ensurePolicy(spec, ports, sessionPorts) {
   withLock(path.join(spec.locksDir, spec.name), function () {
     const state = readState(spec);
     const applied = new Set(state.policies || []);
     const wanted = new Set(spec.networkAllow.concat(ports.map(function (port) { return 'localhost:' + port; })));
+    if (!sessionPorts) {
+      for (const rule of applied) if (rule.startsWith('localhost:')) wanted.add(rule);
+    }
     const missing = Array.from(wanted).filter(function (rule) { return !applied.has(rule); });
     const stale = Array.from(applied).filter(function (rule) { return !wanted.has(rule); });
     if (missing.length > 0) {
       sbxOk(spec, ['policy', 'allow', 'network', '--sandbox', spec.name, missing.join(',')], 'sbx policy allow');
     }
     for (const rule of stale) {
-      sbxOk(spec, ['policy', 'rm', 'network', '--sandbox', spec.name, '--resource', rule], 'sbx policy rm ' + rule);
+      // Without --force, sbx asks for confirmation and fails without a terminal.
+      sbxOk(spec, ['policy', 'rm', 'network', '--sandbox', spec.name, '--resource', rule, '--force'], 'sbx policy rm ' + rule);
     }
     if (missing.length > 0 || stale.length > 0) {
       state.policies = Array.from(wanted);
@@ -481,11 +487,20 @@ function guestStateDir(spec) {
   return path.join(spec.claudeConfigDir, '.paseo-sbx');
 }
 
-function writeRelays(spec, relays, internalPorts) {
+function writeRelays(spec, relays, internalPorts, sessionPorts) {
   const dir = guestStateDir(spec);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'relays.json');
-  fs.writeFileSync(file + '.tmp', JSON.stringify({ relays: relays, internal: internalPorts }));
+  let internal = internalPorts;
+  if (!sessionPorts) {
+    // As with the policy: keep the loopback ports a session reported.
+    try {
+      internal = Array.from(new Set(internal.concat(JSON.parse(fs.readFileSync(file, 'utf8')).internal || [])));
+    } catch (error) {
+      // no earlier report
+    }
+  }
+  fs.writeFileSync(file + '.tmp', JSON.stringify({ relays: relays, internal: internal }));
   fs.renameSync(file + '.tmp', file);
 }
 
@@ -634,9 +649,10 @@ function main() {
   ensureSandbox(spec, claude);
   const guest = guestEnv(spec);
   const ports = detectPorts(spec, guest);
-  ensurePolicy(spec, ports);
+  const sessionPorts = args[0] !== ENSURE_FLAG;
+  ensurePolicy(spec, ports, sessionPorts);
   const relays = withLock(path.join(spec.locksDir, spec.name), function () { return reconcilePublications(spec, ports); });
-  writeRelays(spec, relays, ports);
+  writeRelays(spec, relays, ports, sessionPorts);
   if (args[0] === ENSURE_FLAG) {
     // Publications need their relays now; without any, preparing a sandbox does not enter it.
     if (relays.length > 0) ensureGuestHelpers(spec, []);

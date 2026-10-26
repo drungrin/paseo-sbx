@@ -324,8 +324,20 @@ describe("wrapper hardening", () => {
     expect(second.status).toBe(0);
     expect(second.calls.filter((call) => call.args[0] === "policy").map((call) => call.args.slice(1))).toEqual([
       ["allow", "network", "--sandbox", spec().name, "example.com"],
-      ["rm", "network", "--sandbox", spec().name, "--resource", "**"],
+      ["rm", "network", "--sandbox", spec().name, "--resource", "**", "--force"],
     ]);
+  });
+
+  it("keeps a session's host port rules when the plugin prepares the sandbox on its own", () => {
+    const sandbox = spec();
+    const mcp = JSON.stringify({ mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:6790/mcp/agents" } } });
+    // A session adds the MCP port; ensure mode runs without the session's arguments.
+    expect(run(["--mcp-config", mcp], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: "{}\n" }).status).toBe(0);
+    const prepared = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(prepared.status).toBe(0);
+    expect(prepared.calls.some((call) => call.args[0] === "policy" && call.args[1] === "rm")).toBe(false);
+    const control = JSON.parse(readFileSync(join(sandbox.claudeConfigDir, ".paseo-sbx", "relays.json"), "utf8"));
+    expect(control.internal).toContain(6790);
   });
 
   it("relays loopback ports named by forwarded variables", () => {
