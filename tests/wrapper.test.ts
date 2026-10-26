@@ -546,16 +546,26 @@ describe("publications", () => {
     const sandbox = spec({ autoPublish: [5173] });
     const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
     expect(result.status).toBe(0);
+    // An explicit host port, even on loopback: sbx cannot unpublish an ephemeral one for good.
+    const [publication] = sandboxState(sandbox).publications;
+    expect(publication).toMatchObject({ guestPort: 5173, relayPort: 41173, allInterfaces: false, reserved: false, auto: true });
+    expect(publication.hostPort).toBeGreaterThan(0);
     expect(fakeState().ports?.[sandbox.name]).toEqual([
-      { host_ip: "127.0.0.1", host_port: 32768, sandbox_port: 41173, protocol: "tcp4" },
-    ]);
-    expect(sandboxState(sandbox).publications).toEqual([
-      { guestPort: 5173, relayPort: 41173, hostPort: null, allInterfaces: false, reserved: false, auto: true },
+      { host_ip: "127.0.0.1", host_port: publication.hostPort, sandbox_port: 41173, protocol: "tcp4" },
     ]);
     const control = JSON.parse(readFileSync(join(sandbox.claudeConfigDir, ".paseo-sbx", "relays.json"), "utf8"));
     expect(control.relays).toEqual([{ relayPort: 41173, guestPort: 5173 }]);
     // Ensure mode starts the relays when there are publications.
     expect(result.calls.some((call) => call.args[0] === "exec")).toBe(true);
+  });
+
+  it("accepts a binding sbx restored between listing and publishing", () => {
+    const sandbox = spec({ autoPublish: [5173] });
+    const result = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(sandbox), FAKE_SBX_ALREADY_PUBLISHED: "1" },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain("could not publish");
   });
 
   it("unpublishes a port that left the repository's auto-publish list", () => {

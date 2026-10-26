@@ -46,6 +46,10 @@ if (args[0] === 'ls') {
     const hostPort = parts.length > 0 ? Number(parts.pop()) : 32768 + bindings.length;
     const hostIp = parts.length > 0 ? parts.pop() : '127.0.0.1';
     if (taken.includes(hostPort)) { process.stderr.write('error: port not available'); process.exit(1); }
+    if (process.env.FAKE_SBX_ALREADY_PUBLISHED || bindings.some((entry) => entry.host_ip === hostIp && entry.host_port === hostPort)) {
+      process.stderr.write('error: publish ports: request failed: 409 Conflict: request[0]: port ' + hostIp + ':' + hostPort + '/tcp4 is already published');
+      process.exit(1);
+    }
     bindings.push({ host_ip: hostIp, host_port: hostPort, sandbox_port: sandboxPort, protocol: 'tcp4' });
     state.ports[name] = bindings;
     save();

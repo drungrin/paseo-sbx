@@ -170,7 +170,9 @@ describe("ports", () => {
     const name = await createdSandbox();
     const paseo = fakePaseo(() => []);
     await publishPort(deps, paseo, { name, guestPort: 5173, allInterfaces: false, hostPort: null });
-    expect(portsOf(name)).toEqual([{ host_ip: "127.0.0.1", host_port: 32768, sandbox_port: 41173, protocol: "tcp4" }]);
+    const picked = readSandboxState(paths, name)?.publications?.[0]?.hostPort;
+    expect(picked).toBeGreaterThan(0);
+    expect(portsOf(name)).toEqual([{ host_ip: "127.0.0.1", host_port: picked, sandbox_port: 41173, protocol: "tcp4" }]);
 
     await publishPort(deps, paseo, { name, guestPort: 5173, allInterfaces: true, hostPort: 45173 });
     expect(portsOf(name)).toEqual([{ host_ip: "0.0.0.0", host_port: 45173, sandbox_port: 41173, protocol: "tcp4" }]);

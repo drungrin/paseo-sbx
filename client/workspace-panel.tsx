@@ -339,7 +339,7 @@ function ServicesSection({ styles, data }: { styles: Styles; data: Description }
         />
         <SettingsInput
           label="Fixed host port"
-          hint="Empty picks one; a loopback port picked by sbx changes when the VM restarts."
+          hint="Empty picks a free one. Either way the port stays the same when the VM restarts."
           initialValue={hostPort}
           placeholder="any"
           error={hostInvalid ? "Enter a port from 1 to 65535" : undefined}

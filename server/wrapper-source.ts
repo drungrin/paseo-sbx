@@ -408,26 +408,29 @@ function allocateRelayPort(publications, guestPort, avoid) {
   throw new WrapperError('no free relay port in ' + RELAY_FIRST + '-' + RELAY_LAST);
 }
 
-function freeHostPort() {
+function freeHostPort(host) {
   const result = cp.spawnSync(process.execPath, ['-e',
-    "const s=require('net').createServer();s.listen(0,'0.0.0.0',()=>{process.stdout.write(String(s.address().port));s.close();});",
+    "const s=require('net').createServer();s.listen(0,process.argv[1],()=>{process.stdout.write(String(s.address().port));s.close();});",
+    host,
   ], { encoding: 'utf8', env: { ELECTRON_RUN_AS_NODE: '1' } });
   const port = Number(result.stdout);
   if (!(port > 0)) throw new WrapperError('could not find a free host port');
   return port;
 }
 
+function hostIp(publication) {
+  return publication.allInterfaces ? '0.0.0.0' : '127.0.0.1';
+}
+
 function publicationSpec(publication) {
-  if (publication.allInterfaces) return '0.0.0.0:' + publication.hostPort + ':' + publication.relayPort;
-  if (publication.hostPort) return '127.0.0.1:' + publication.hostPort + ':' + publication.relayPort;
-  return String(publication.relayPort);
+  return hostIp(publication) + ':' + publication.hostPort + ':' + publication.relayPort;
 }
 
 function sameBinding(publication, actual) {
   return (
     actual.sandbox_port === publication.relayPort &&
-    actual.host_ip === (publication.allInterfaces ? '0.0.0.0' : '127.0.0.1') &&
-    (!publication.hostPort || actual.host_port === publication.hostPort)
+    actual.host_ip === hostIp(publication) &&
+    actual.host_port === publication.hostPort
   );
 }
 
@@ -436,6 +439,11 @@ function sameBinding(publication, actual) {
 // listens on the VM's external interface, and services that listen on 0.0.0.0 accept loopback
 // connections too. Publications live in the sandbox state; this reconciles sbx with them, adding
 // the repository's auto-published ports, and returns the relays the guest agent should run.
+//
+// Every publication gets an explicit host port. sbx 0.49 restores its publications at every
+// start, and keeps an ephemeral one as port 0, which --unpublish cannot match: it would come back
+// at each restart and duplicate the one published here. An explicit port is removed for good,
+// restored as is, and keeps the URL stable.
 function reconcilePublications(spec, internalPorts) {
   const state = readState(spec);
   const autoPublish = spec.autoPublish || [];
@@ -455,7 +463,7 @@ function reconcilePublications(spec, internalPorts) {
     });
   }
   for (const publication of publications) {
-    if (publication.allInterfaces && !publication.hostPort) publication.hostPort = freeHostPort();
+    if (!publication.hostPort) publication.hostPort = freeHostPort(hostIp(publication));
   }
   // Listing does not start the VM; it also catches publications removed from the list.
   const actual = JSON.parse(sbxOk(spec, ['ports', spec.name, '--json'], 'sbx ports') || '[]').filter(function (entry) {
@@ -469,7 +477,8 @@ function reconcilePublications(spec, internalPorts) {
   for (const publication of publications) {
     if (actual.some(function (entry) { return sameBinding(publication, entry); })) continue;
     const result = sbx(spec, ['ports', spec.name, '--publish', publicationSpec(publication)]);
-    if (result.status !== 0) {
+    // sbx may have restored it between the listing and now.
+    if (result.status !== 0 && !/already published/.test(result.stderr || '')) {
       // A taken host port must not stop the session: the panel shows the publication as missing.
       log('could not publish guest port ' + publication.guestPort + ': ' + (result.stderr || result.stdout || '').trim().slice(-300));
     }
