@@ -6,6 +6,7 @@ import {
   finishTemplateRpc,
   listSandboxesRpc,
   listTemplatesRpc,
+  memoryRpc,
   prepareTemplateRpc,
   removeTemplateRpc,
   sandboxActionRpc,
@@ -17,7 +18,9 @@ import type { SandboxSettings } from "../shared/settings";
 import { memoryMiB } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
 import { ensureProvider, providerStatus } from "./provider";
-import { boundAgents, recreateBlockers, recreateSandbox } from "./recreate";
+import { activeAgentsBySandbox } from "./agents";
+import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
+import { recreateBlockers, recreateSandbox } from "./recreate";
 import { repoDisplayName, repoIdentity } from "./repo";
 import { listSandboxes, prepareSandbox, removeSandbox, sbxHealth, shellCommand, stopSandbox } from "./sbx";
 import { buildSpec, forwardedEnvNames, readEnvFile, templateFor } from "./spec-builder";
@@ -91,13 +94,14 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       repoName: repoDisplayName(repo),
       memoryMiB: Number.parseInt(spec.memory, 10),
       repoMemoryGiB: settings.repos[spec.repoKey]?.memoryGiB ?? null,
+      rssMiB: sandbox?.status === "running" ? (vmMemoryMiB(paths).get(spec.name) ?? null) : null,
       mounts: [spec.workspace, ...spec.mounts],
       env: forwardedEnvNames(settings, spec.repoKey).map((name) => ({
         name,
         present: fileValues[name] !== undefined || process.env[name] !== undefined,
       })),
       template: templateStatus(settings, spec.repoKey, readSandboxState(paths, spec.name), templates),
-      agents: await boundAgents(paths, paseo, spec.name),
+      agents: (await activeAgentsBySandbox(paths, paseo)).get(spec.name) ?? [],
       recreateBlockers: sandbox ? await recreateBlockers(paths, paseo, spec.name) : ["the sandbox does not exist yet"],
       templatePrep:
         sandboxes.find((entry) => entry.kind === "template-prep" && entry.repoKey === spec.repoKey)?.name ?? null,
@@ -108,10 +112,27 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
   });
 
   server.handle(sandboxActionRpc, async ({ name, action }, { paseo }) => {
-    if (action === "stop") await stopSandbox(paths, name);
-    else if (action === "remove") await removeSandbox(paths, name);
+    if (action === "stop") return { ok: true as const, graceful: (await stopSandbox(paths, name)).graceful };
+    if (action === "remove") await removeSandbox(paths, name);
     else await recreateSandbox(deps, paseo, name);
     return { ok: true as const };
+  });
+
+  server.handle(memoryRpc, async (_input, { paseo }) => {
+    const settings = await deps.readSettings();
+    const [sandboxes, agents] = await Promise.all([listSandboxes(paths), activeAgentsBySandbox(paths, paseo)]);
+    const rss = vmMemoryMiB(paths);
+    const host = hostMemory();
+    return {
+      host,
+      vmRssMiB: [...rss.values()].reduce((sum, value) => sum + value, 0),
+      sandboxes: sandboxes.map((sandbox) => ({
+        name: sandbox.name,
+        rssMiB: sandbox.status === "running" ? (rss.get(sandbox.name) ?? null) : null,
+        activeAgents: agents.get(sandbox.name) ?? [],
+      })),
+      alerts: host ? memoryAlerts(host, settings.memoryAlert) : [],
+    };
   });
 
   // Creates the sandbox when needed so a terminal can enter it before any agent ran there.

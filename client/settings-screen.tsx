@@ -20,6 +20,8 @@ interface Draft {
   memoryPercent: string;
   memoryFloorGiB: string;
   cpus: string;
+  psiPercent: string;
+  availablePercent: string;
   template: string;
   mounts: string;
   claudeShared: string;
@@ -37,6 +39,8 @@ function toDraft(values: SandboxSettings): Draft {
     memoryPercent: String(values.memoryPercent),
     memoryFloorGiB: String(values.memoryFloorGiB),
     cpus: String(values.cpus),
+    psiPercent: String(values.memoryAlert.psiPercent),
+    availablePercent: String(values.memoryAlert.availablePercent),
     template: values.template,
     mounts: values.mounts.join("\n"),
     claudeShared: values.claudeShared.join(", "),
@@ -55,6 +59,10 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   if (!(memoryPercent >= 1 && memoryPercent <= 90)) return "Memory percent must be between 1 and 90.";
   if (!(memoryFloorGiB >= 1)) return "Memory floor must be at least 1 GiB.";
   if (!(Number.isInteger(cpus) && cpus >= 0)) return "CPUs must be a whole number (0 = all).";
+  const psiPercent = Number(draft.psiPercent);
+  const availablePercent = Number(draft.availablePercent);
+  if (!(psiPercent >= 1 && psiPercent <= 100)) return "The pressure threshold must be between 1 and 100.";
+  if (!(availablePercent >= 1 && availablePercent <= 90)) return "The available RAM threshold must be between 1 and 90.";
   return {
     ...base,
     routeClaudeAgents: draft.routeClaudeAgents,
@@ -62,6 +70,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     memoryPercent,
     memoryFloorGiB,
     cpus,
+    memoryAlert: { psiPercent, availablePercent },
     template: draft.template,
     mounts: parseList(draft.mounts),
     claudeShared: parseList(draft.claudeShared),
@@ -157,6 +166,17 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput label="Minimum memory (GiB)" initialValue={draft.memoryFloorGiB} onChangeText={update("memoryFloorGiB")} />
           <SettingsInput label="CPUs (0 = all)" initialValue={draft.cpus} onChangeText={update("cpus")} />
+          <SettingsInput
+            label="Alert at memory pressure (%)"
+            hint="The host's memory PSI over the last minute. The Sandboxes screen alerts at or above it."
+            initialValue={draft.psiPercent}
+            onChangeText={update("psiPercent")}
+          />
+          <SettingsInput
+            label="Alert below available RAM (%)"
+            initialValue={draft.availablePercent}
+            onChangeText={update("availablePercent")}
+          />
         </SettingsCard>
       </SettingsSection>
 

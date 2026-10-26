@@ -73,7 +73,7 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
               <Text style={styles.mono}>{data.template.sandbox ?? (data.status ? "sbx image" : "-")}</Text>
             </Row>
             <Row styles={styles} label="Memory">
-              {formatMiB(data.memoryMiB)}
+              {data.rssMiB === null ? `limit ${formatMiB(data.memoryMiB)}` : `${formatMiB(data.rssMiB)} of ${formatMiB(data.memoryMiB)}`}
             </Row>
           </Card>
         ) : null}
@@ -119,6 +119,9 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
           </Text>
         ) : null}
         {openShell.isPending || action.isPending ? <Text style={styles.muted}>Working on the sandbox…</Text> : null}
+        {action.data?.graceful === false ? (
+          <Text style={styles.muted}>Stopped without shutting its Docker down first: databases recover on the next start.</Text>
+        ) : null}
         {openShell.error ? <Text style={styles.error}>{errorMessage(openShell.error)}</Text> : null}
         {action.error ? <Text style={styles.error}>{errorMessage(action.error)}</Text> : null}
       </Section>

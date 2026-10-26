@@ -24,14 +24,15 @@ Open **Sandboxes** in the sidebar and press **Configure** to register the provid
 - **Allowed destinations** and **Extra host ports**: the sandbox network policy and additional host loopback ports to relay.
 - **Excluded paths**: workspaces that keep running Claude on the host when routing is on.
 
-The workspace **Sandbox** panel shows the sandbox, the agents keeping it running, its template, mounts and variables, and opens a terminal inside it for manual checks. Settings for a repository apply to every worktree of it.
+The **Sandboxes** screen shows the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and lists the agents keeping each VM running, with an **Archive** action. The workspace **Sandbox** panel shows the sandbox, the agents keeping it running, its template, mounts and variables, and opens a terminal inside it for manual checks. Settings for a repository apply to every worktree of it.
 
 ## Limits
 
 - Terminals, workspace scripts and services from `paseo.json` still run on the host.
 - Template, mounts, memory and CPUs are fixed when a sandbox is created. **Recreate** applies new ones once every agent of the sandbox is archived; it discards what runs inside the VM. Existing agents keep the sandbox they started in when you change the isolation mode.
 - Templates do not include the images of the VM's own Docker: each new sandbox pulls them again.
-- Stopping a sandbox is abrupt for what runs inside it: databases go through crash recovery on the next start.
+- **Stop** in the panel shuts the VM's Docker down first. The automatic stop 30 seconds after the last agent, and a restart of Paseo, are abrupt for what runs inside: databases go through crash recovery on the next start.
+- Memory figures come from an internal detail of Docker Sandboxes 0.49 and show as unknown if a later version changes it. Linux only.
 - Each open workspace keeps a VM running, about 1 GB of memory at idle plus its workload, and each VM has its own image cache on disk.
 - Hooks or plugins in your Claude settings that call host-only binaries fail inside the sandbox.
 - This is process isolation, not a security boundary: the default network policy allows everything and forwarded variables are visible to agents.

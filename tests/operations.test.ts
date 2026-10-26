@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sandboxSettingsSchema, type SandboxSettings } from "../shared/settings";
+import { activeAgentsBySandbox } from "../server/agents";
 import { writeBinding } from "../server/bindings";
 import type { ServerDeps } from "../server/hooks";
 import { installBinFiles, pluginPaths, type PluginPaths } from "../server/paths";
 import { recreateSandbox } from "../server/recreate";
-import { listSandboxes, prepareSandbox } from "../server/sbx";
+import { listSandboxes, prepareSandbox, stopSandbox } from "../server/sbx";
 import { buildSpec } from "../server/spec-builder";
 import { processStart, readSandboxState } from "../server/state";
 import { ensureTemplatePrep, finishTemplatePrep, removeTemplate, saveTemplate } from "../server/templates";
@@ -45,20 +46,16 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-interface FakeAgent {
-  archivedAt: string | null;
-}
-
-/** A Paseo API whose agents answer `refresh()` from a function, so a test can change them mid-operation. */
-function fakePaseo(agent: (id: string, call: number) => FakeAgent | null) {
+/** A Paseo API whose live (not archived) agents come from a function of the call count. */
+function fakePaseo(active: (call: number) => string[]) {
   let calls = 0;
   return {
     agents: {
-      ref: (id: string) => ({
-        refresh: async () => {
-          const value = agent(id, calls++);
-          return value ? { agent: { id, title: id, status: "idle", activeTurn: null, updatedAt: null, ...value } } : null;
-        },
+      list: async () => ({
+        entries: active(calls++).map((id) => ({
+          agent: { id, title: id, status: "idle", activeTurn: null, archivedAt: null, updatedAt: null },
+        })),
+        pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
       }),
     },
   } as unknown as Parameters<typeof recreateSandbox>[1];
@@ -75,7 +72,7 @@ describe("recreate", () => {
   it("refuses while an agent of the sandbox is not archived, and touches nothing", async () => {
     const name = await createdSandbox();
     fake.clearCalls();
-    await expect(recreateSandbox(deps, fakePaseo(() => ({ archivedAt: null })), name)).rejects.toThrow("is not archived");
+    await expect(recreateSandbox(deps, fakePaseo(() => ["agent-1"]), name)).rejects.toThrow("is not archived");
     expect(fake.calls().some((call) => call.args[0] === "rm")).toBe(false);
   });
 
@@ -84,13 +81,13 @@ describe("recreate", () => {
     const leases = join(paths.locksDir, `${name}.leases`);
     mkdirSync(leases, { recursive: true });
     writeFileSync(join(leases, String(process.pid)), JSON.stringify({ pid: process.pid, start: processStart(process.pid), agentId: null }));
-    await expect(recreateSandbox(deps, fakePaseo(() => ({ archivedAt: "x" })), name)).rejects.toThrow("session(s) still running");
+    await expect(recreateSandbox(deps, fakePaseo(() => []), name)).rejects.toThrow("session(s) still running");
   });
 
   it("aborts when an agent comes back between the first check and the lock", async () => {
     const name = await createdSandbox();
     fake.clearCalls();
-    const paseo = fakePaseo((_id, call) => ({ archivedAt: call === 0 ? "x" : null }));
+    const paseo = fakePaseo((call) => (call === 0 ? [] : ["agent-1"]));
     await expect(recreateSandbox(deps, paseo, name)).rejects.toThrow("is not archived");
     expect(fake.calls().some((call) => call.args[0] === "rm")).toBe(false);
     expect(existsSync(join(paths.locksDir, `${name}.recreating`))).toBe(false);
@@ -105,7 +102,7 @@ describe("recreate", () => {
     settings = { ...settings, repos: { [readSandboxState(paths, name)?.repoKey ?? ""]: { template: "", memoryGiB: 5, mounts: [], envNames: [], autoPublish: [] } } };
     fake.clearCalls();
 
-    await recreateSandbox(deps, fakePaseo(() => ({ archivedAt: "x" })), name);
+    await recreateSandbox(deps, fakePaseo(() => []), name);
 
     const verbs = fake.calls().map((call) => call.args[0]);
     expect(verbs.indexOf("rm")).toBeLessThan(verbs.lastIndexOf("create"));
@@ -114,6 +111,52 @@ describe("recreate", () => {
     expect(readFileSync(join(configDir, "projects", "session.jsonl"), "utf8")).toBe("transcript");
     expect(existsSync(join(paths.locksDir, `${name}.recreating`))).toBe(false);
     expect(existsSync(join(paths.locksDir, name))).toBe(false);
+  });
+});
+
+describe("agents of a sandbox", () => {
+  it("matches the daemon's live agents, across pages, against the bindings", async () => {
+    writeBinding(paths, "a1", { key: "k", name: "paseo-app-0000000a", claudeConfigDir: "/c" });
+    writeBinding(paths, "a2", { key: "k", name: "paseo-app-0000000a", claudeConfigDir: "/c" });
+    writeBinding(paths, "b1", { key: "k", name: "paseo-lib-0000000b", claudeConfigDir: "/c" });
+    const agent = (id: string, extra: object = {}) => ({
+      agent: { id, title: id, status: "idle", activeTurn: null, archivedAt: null, updatedAt: null, ...extra },
+    });
+    const pages = [
+      { entries: [agent("a1", { activeTurn: { id: "t" } }), agent("unbound")], pageInfo: { hasMore: true, nextCursor: "p2", prevCursor: null } },
+      { entries: [agent("b1")], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } },
+    ];
+    const cursors: (string | undefined)[] = [];
+    const paseo = {
+      agents: {
+        list: async (options: { page?: { cursor?: string } }) => {
+          cursors.push(options.page?.cursor);
+          return pages[cursors.length - 1];
+        },
+      },
+    } as unknown as Parameters<typeof activeAgentsBySandbox>[1];
+
+    const result = await activeAgentsBySandbox(paths, paseo);
+    expect(cursors).toEqual([undefined, "p2"]);
+    expect(result.get("paseo-app-0000000a")?.map((entry) => [entry.id, entry.activeTurn])).toEqual([["a1", true]]);
+    expect(result.get("paseo-lib-0000000b")?.map((entry) => entry.id)).toEqual(["b1"]);
+  });
+});
+
+describe("stop", () => {
+  it("shuts the guest's Docker down before stopping the VM", async () => {
+    const name = await createdSandbox();
+    fake.clearCalls();
+    expect(await stopSandbox(paths, name)).toEqual({ graceful: true });
+    const calls = fake.calls().map((call) => call.args.slice(0, 4).join(" "));
+    expect(calls.indexOf(`exec -u root ${name}`)).toBeLessThan(calls.indexOf(`stop ${name}`));
+  });
+
+  it("still stops the VM, and says so, when Docker does not shut down", async () => {
+    const name = await createdSandbox();
+    process.env.FAKE_SBX_ROOT_EXIT = "3";
+    expect(await stopSandbox(paths, name)).toEqual({ graceful: false });
+    expect(fake.calls().some((call) => call.args.join(" ") === `stop ${name}`)).toBe(true);
   });
 });
 

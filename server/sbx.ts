@@ -113,10 +113,34 @@ export function assertSandboxName(name: string): void {
   if (!/^paseo-[a-z0-9-]+-[0-9a-f]{8}$/.test(name)) throw new Error(`not a paseo-sbx sandbox: ${name}`);
 }
 
-export async function stopSandbox(paths: PluginPaths, name: string): Promise<void> {
+/**
+ * Stops the VM after asking its Docker daemon to shut down: dockerd stops the containers without
+ * marking them stopped by the user, so `unless-stopped` containers come back on the next start
+ * and databases skip crash recovery. `sbx stop` alone, the auto-stop and the death of the Paseo
+ * service all stop the VM like a power cut.
+ */
+export async function stopSandbox(paths: PluginPaths, name: string): Promise<{ graceful: boolean }> {
   assertSandboxName(name);
-  await withSandboxLock(paths, name, newLockToken(), () => runSbxOk(paths, ["stop", name], `sbx stop ${name}`));
+  return withSandboxLock(paths, name, newLockToken(), async () => {
+    const entries = JSON.parse((await runSbxOk(paths, ["ls", "--json"], "sbx ls")) || "[]") as SbxListEntry[];
+    if (entries.find((entry) => entry.name === name)?.status !== "running") {
+      await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
+      return { graceful: true };
+    }
+    const shutdown = await runSbx(paths, ["exec", "-u", "root", name, "sh", "-c", DOCKERD_SHUTDOWN], 30_000);
+    await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
+    return { graceful: shutdown.code === 0 };
+  });
 }
+
+// SIGTERM to the guest's dockerd, then up to 20 s for it to stop its containers and exit.
+const DOCKERD_SHUTDOWN = [
+  'pid=$(cat /var/run/docker.pid 2>/dev/null || pidof dockerd)',
+  '[ -n "$pid" ] || exit 0',
+  'kill -TERM $pid || exit 0',
+  'i=0',
+  'while kill -0 $pid 2>/dev/null; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.1; done',
+].join("\n");
 
 /** Removes the sandbox with its state and leases; the Claude config dir and transcripts stay. */
 export async function removeSandbox(paths: PluginPaths, name: string): Promise<void> {

@@ -5,6 +5,7 @@ import {
   ensureProviderRpc,
   listSandboxesRpc,
   listTemplatesRpc,
+  memoryRpc,
   removeTemplateRpc,
   sandboxActionRpc,
   saveTemplateRpc,
@@ -30,6 +31,11 @@ export function useSandboxDescription(workspaceId: string, directory: string | n
     enabled: directory !== null,
     refetchInterval: 10_000,
   });
+}
+
+export function useMemory() {
+  const get = useRpc(memoryRpc);
+  return useQuery({ queryKey: ["memory"], queryFn: () => get({}), refetchInterval: 10_000 });
 }
 
 export function useTemplates() {

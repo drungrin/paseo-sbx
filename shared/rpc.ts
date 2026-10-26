@@ -78,6 +78,8 @@ export const describeSandboxRpc = defineRpc({
     repoName: z.string(),
     memoryMiB: z.number(),
     repoMemoryGiB: z.number().nullable(),
+    /** Resident memory of the running VM; null when stopped or unknown. */
+    rssMiB: z.number().nullable(),
     mounts: z.array(z.string()),
     env: z.array(z.object({ name: z.string(), present: z.boolean() })),
     template: z.object({
@@ -100,7 +102,29 @@ export const describeSandboxRpc = defineRpc({
 export const sandboxActionRpc = defineRpc({
   name: "sandbox.action",
   input: z.object({ name: z.string(), action: z.enum(["stop", "remove", "recreate"]) }),
-  output: z.object({ ok: z.literal(true) }),
+  /** `graceful` is false when a stop could not shut the VM's Docker down first. */
+  output: z.object({ ok: z.literal(true), graceful: z.boolean().optional() }),
+});
+
+export const memoryRpc = defineRpc({
+  name: "memory.get",
+  input: z.object({}),
+  output: z.object({
+    host: z
+      .object({
+        totalMiB: z.number(),
+        availableMiB: z.number(),
+        swapUsedMiB: z.number(),
+        psiSome60: z.number().nullable(),
+      })
+      .nullable(),
+    /** Sum of the VMs' resident memory: an estimate, shared pages count once per VM. */
+    vmRssMiB: z.number(),
+    sandboxes: z.array(
+      z.object({ name: z.string(), rssMiB: z.number().nullable(), activeAgents: z.array(boundAgentSchema) }),
+    ),
+    alerts: z.array(z.string()),
+  }),
 });
 
 const shellSchema = z.object({ name: z.string(), command: z.string(), args: z.array(z.string()) });

@@ -1,6 +1,6 @@
-import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import { activeAgentsBySandbox } from "./agents";
 import type { ServerDeps } from "./hooks";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
@@ -18,64 +18,15 @@ import { findTemplate, listTemplates } from "./templates";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 
-export interface BoundAgent {
-  id: string;
-  title: string | null;
-  status: string;
-  activeTurn: boolean;
-  archived: boolean;
-  updatedAt: string | null;
-}
-
-/** Agent ids whose binding names this sandbox. */
-export function boundAgentIds(paths: PluginPaths, name: string): string[] {
-  let entries: string[] = [];
-  try {
-    entries = readdirSync(paths.bindingsDir);
-  } catch {
-    return [];
-  }
-  const ids: string[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) continue;
-    try {
-      const binding = JSON.parse(readFileSync(join(paths.bindingsDir, entry), "utf8")) as { name?: unknown };
-      if (binding.name === name) ids.push(entry.slice(0, -".json".length));
-    } catch {
-      // unreadable binding: ignore
-    }
-  }
-  return ids;
-}
-
-/** The agents bound to the sandbox that still exist, with their state. */
-export async function boundAgents(paths: PluginPaths, paseo: PaseoApi, name: string): Promise<BoundAgent[]> {
-  const agents: BoundAgent[] = [];
-  for (const id of boundAgentIds(paths, name)) {
-    const result = await paseo.agents.ref(id).refresh().catch(() => null);
-    const agent = result?.agent;
-    if (!agent) continue;
-    agents.push({
-      id,
-      title: agent.title ?? null,
-      status: agent.status,
-      activeTurn: Boolean(agent.activeTurn),
-      archived: Boolean(agent.archivedAt),
-      updatedAt: agent.updatedAt ?? null,
-    });
-  }
-  return agents;
-}
-
 /**
  * Why the sandbox cannot be recreated now. The plugin API can neither close nor reopen an
  * agent's runtime, and a resident agent can start a turn at any time without going through the
  * wrapper, so every bound agent must be archived and no session may be running.
  */
 export async function recreateBlockers(paths: PluginPaths, paseo: PaseoApi, name: string): Promise<string[]> {
-  const blockers = (await boundAgents(paths, paseo, name))
-    .filter((agent) => !agent.archived)
-    .map((agent) => `agent ${agent.title ?? agent.id} is not archived`);
+  const blockers = ((await activeAgentsBySandbox(paths, paseo)).get(name) ?? []).map(
+    (agent) => `agent ${agent.title ?? agent.id} is not archived`,
+  );
   const leases = liveLeases(paths, name);
   if (leases.length > 0) blockers.push(`${leases.length} session(s) still running in the sandbox`);
   return blockers;

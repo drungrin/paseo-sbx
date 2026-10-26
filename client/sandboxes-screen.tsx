@@ -3,8 +3,10 @@ import { Text, View } from "react-native";
 import type { SandboxSummary, TemplateSummary } from "../shared/rpc";
 import { sandboxSettings } from "../shared/settings";
 import {
+  useArchiveAgent,
   useEnsureProvider,
   useInvalidateAll,
+  useMemory,
   useRemoveTemplate,
   useSandboxAction,
   useSandboxes,
@@ -83,6 +85,8 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
         </View>
       </Section>
 
+      <MemorySection styles={styles} />
+
       <Section styles={styles} title="Sandboxes">
         {sandboxes.isPending ? <Text style={styles.muted}>Loading…</Text> : null}
         {sandboxes.error ? <Text style={styles.error}>{errorMessage(sandboxes.error)}</Text> : null}
@@ -99,6 +103,66 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
       <TemplatesSection styles={styles} />
       <LegacyOverridesSection styles={styles} />
     </Screen>
+  );
+}
+
+function MemorySection({ styles }: { styles: Styles }) {
+  const memory = useMemory();
+  const archive = useArchiveAgent();
+  const data = memory.data;
+  if (memory.error) return <Text style={styles.error}>{errorMessage(memory.error)}</Text>;
+  if (!data) return null;
+  const holders = data.sandboxes.filter((sandbox) => sandbox.activeAgents.length > 0);
+  return (
+    <Section styles={styles} title="Memory">
+      {data.alerts.length > 0 ? (
+        <Text style={styles.error}>{`Memory alert: ${data.alerts.join("; ")}. Archive idle agents to let their VMs stop.`}</Text>
+      ) : null}
+      <Card styles={styles}>
+        <Row styles={styles} label="VMs (resident, estimate)" first>
+          {formatMiB(data.vmRssMiB)}
+        </Row>
+        {data.host ? (
+          <>
+            <Row styles={styles} label="Host RAM available">
+              {`${formatMiB(data.host.availableMiB)} of ${formatMiB(data.host.totalMiB)}`}
+            </Row>
+            <Row styles={styles} label="Swap in use">
+              {formatMiB(data.host.swapUsedMiB)}
+            </Row>
+            <Row styles={styles} label="Memory pressure (avg 60 s)">
+              {data.host.psiSome60 === null ? "unavailable" : `${data.host.psiSome60.toFixed(1)}%`}
+            </Row>
+          </>
+        ) : null}
+      </Card>
+      {holders.map((sandbox) => (
+        <Card key={sandbox.name} styles={styles}>
+          <Row styles={styles} label={sandbox.name} first>
+            {sandbox.rssMiB === null ? "-" : formatMiB(sandbox.rssMiB)}
+          </Row>
+          {sandbox.activeAgents.map((agent) => (
+            <View key={agent.id} style={styles.row}>
+              <View style={{ flexShrink: 1 }}>
+                <Text style={styles.label}>{agent.title ?? agent.id}</Text>
+                <Text style={styles.muted}>{agent.activeTurn ? "working" : `idle (${agent.status})`}</Text>
+              </View>
+              {agent.activeTurn ? null : (
+                <ConfirmButton
+                  styles={styles}
+                  label="Archive"
+                  confirmLabel="Confirm archive"
+                  disabled={archive.isPending}
+                  onConfirm={() => archive.mutate(agent.id)}
+                />
+              )}
+            </View>
+          ))}
+        </Card>
+      ))}
+      <Text style={styles.muted}>Agents that are not archived keep their VM running. Archiving the last one lets it stop on its own.</Text>
+      {archive.error ? <Text style={styles.error}>{errorMessage(archive.error)}</Text> : null}
+    </Section>
   );
 }
 
@@ -201,6 +265,7 @@ function LegacyOverridesSection({ styles }: { styles: Styles }) {
 
 function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSummary }) {
   const action = useSandboxAction();
+  const abrupt = action.data?.graceful === false;
   return (
     <Card styles={styles}>
       <Row styles={styles} label={sandbox.name} first>
@@ -234,6 +299,9 @@ function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSumm
           onConfirm={() => action.mutate({ name: sandbox.name, action: "remove" })}
         />
       </View>
+      {abrupt ? (
+        <Text style={[styles.muted, { padding: 12 }]}>Stopped without shutting its Docker down first: databases recover on the next start.</Text>
+      ) : null}
       {action.error ? <Text style={[styles.error, { padding: 12 }]}>{errorMessage(action.error)}</Text> : null}
     </Card>
   );

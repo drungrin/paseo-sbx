@@ -47,6 +47,9 @@ if (args[0] === 'ls') {
   const env = { PATH: process.env.PATH };
   for (; i < args.length; i++) {
     if (args[i] === '-i' || args[i] === '-it') continue;
+    // Commands for the guest's root (the plugin's dockerd shutdown) must never run on the
+    // test host: report FAKE_SBX_ROOT_EXIT instead.
+    if (args[i] === '-u') process.exit(Number(process.env.FAKE_SBX_ROOT_EXIT || 0));
     if (args[i] === '-w') { cwd = args[++i]; continue; }
     if (args[i] === '-e') { const name = args[++i]; env[name] = process.env[name] === undefined ? '' : process.env[name]; continue; }
     if (args[i] === '--env-file') {
