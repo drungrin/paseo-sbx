@@ -4,6 +4,7 @@ import {
   describeSandboxRpc,
   ensureProviderRpc,
   finishTemplateRpc,
+  getOperationRpc,
   listSandboxesRpc,
   listTemplatesRpc,
   memoryRpc,
@@ -17,11 +18,12 @@ import {
   unpublishPortRpc,
 } from "../shared/rpc";
 import type { SandboxSettings } from "../shared/settings";
-import { memoryMiB } from "../shared/spec";
+import { memoryMiB, templatePrepName } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
 import { ensureProvider, providerStatus } from "./provider";
 import { activeAgentsBySandbox } from "./agents";
 import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
+import { getOperation, operationsFor, runOperation } from "./operations";
 import { actualPublications, internalPorts, publishPort, readListeners, unpublishPort } from "./ports";
 import { recreateBlockers, recreateSandbox } from "./recreate";
 import { repoDisplayName, repoIdentity } from "./repo";
@@ -111,6 +113,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       siblings: sandboxes
         .filter((entry) => entry.kind === "working" && entry.repoKey === spec.repoKey && entry.name !== spec.name)
         .map((entry) => entry.name),
+      operations: operationsFor([spec.name, templatePrepName(repo.key, repo.root)]),
       services: await services(spec.name, spec.claudeConfigDir, Boolean(sandbox)),
     };
   });
@@ -138,22 +141,30 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     };
   }
 
-  server.handle(publishPortRpc, async (input, { paseo }) => {
-    await publishPort(deps, paseo, input);
-    return { ok: true as const };
-  });
+  server.handle(publishPortRpc, (input, { paseo }) =>
+    runOperation("publish", input.name, async () => {
+      await publishPort(deps, paseo, input);
+      return null;
+    }),
+  );
 
-  server.handle(unpublishPortRpc, async ({ name, guestPort }) => {
-    await unpublishPort(deps, name, guestPort);
-    return { ok: true as const };
-  });
+  server.handle(unpublishPortRpc, ({ name, guestPort }) =>
+    runOperation("unpublish", name, async () => {
+      await unpublishPort(deps, name, guestPort);
+      return null;
+    }),
+  );
 
-  server.handle(sandboxActionRpc, async ({ name, action }, { paseo }) => {
-    if (action === "stop") return { ok: true as const, graceful: (await stopSandbox(paths, name)).graceful };
-    if (action === "remove") await removeSandbox(paths, name);
-    else await recreateSandbox(deps, paseo, name);
-    return { ok: true as const };
-  });
+  server.handle(getOperationRpc, ({ id }) => getOperation(id));
+
+  server.handle(sandboxActionRpc, ({ name, action }, { paseo }) =>
+    runOperation(action, name, async () => {
+      if (action === "stop") return stopSandbox(paths, name);
+      if (action === "remove") await removeSandbox(paths, name);
+      else await recreateSandbox(deps, paseo, name);
+      return null;
+    }),
+  );
 
   server.handle(memoryRpc, async (_input, { paseo }) => {
     const settings = await deps.readSettings();
@@ -176,8 +187,10 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
   server.handle(shellCommandRpc, async ({ workspaceId, directory }) => {
     const settings = await deps.readSettings();
     const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths });
-    await prepareSandbox(paths, spec);
-    return { name: spec.name, ...shellCommand(paths, spec.name) };
+    return runOperation("prepare", spec.name, async () => {
+      await prepareSandbox(paths, spec);
+      return { name: spec.name, ...shellCommand(paths, spec.name) };
+    });
   });
 
   server.handle(listTemplatesRpc, async () => {
@@ -186,7 +199,9 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     return { templates: templates.map((template) => ({ ...template, users: templateUsers(settings, template.ref) })) };
   });
 
-  server.handle(saveTemplateRpc, async ({ name, tag }) => ({ ref: await saveTemplate(paths, name, tag) }));
+  server.handle(saveTemplateRpc, ({ name, tag }) =>
+    runOperation("save-template", name, async () => ({ ref: await saveTemplate(paths, name, tag) })),
+  );
 
   server.handle(removeTemplateRpc, async ({ ref }) => {
     await removeTemplate(paths, await deps.readSettings(), ref);
@@ -194,9 +209,14 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
   });
 
   server.handle(prepareTemplateRpc, async ({ directory }) => {
-    const prep = await ensureTemplatePrep(deps, directory);
-    return { name: prep.name, repoKey: prep.repoKey, ...shellCommand(paths, prep.name, { noHistory: true }) };
+    const repo = await repoIdentity(directory);
+    return runOperation("prepare-template", templatePrepName(repo.key, repo.root), async () => {
+      const prep = await ensureTemplatePrep(deps, directory);
+      return { name: prep.name, repoKey: prep.repoKey, ...shellCommand(paths, prep.name, { noHistory: true }) };
+    });
   });
 
-  server.handle(finishTemplateRpc, async ({ name, tag }) => ({ ref: await finishTemplatePrep(paths, name, tag) }));
+  server.handle(finishTemplateRpc, ({ name, tag }) =>
+    runOperation("save-template", name, async () => ({ ref: await finishTemplatePrep(paths, name, tag) })),
+  );
 }

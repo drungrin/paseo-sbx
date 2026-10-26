@@ -1,15 +1,19 @@
 import { usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { z } from "zod";
 import {
   describeSandboxRpc,
   ensureProviderRpc,
+  getOperationRpc,
   listSandboxesRpc,
   listTemplatesRpc,
   memoryRpc,
   removeTemplateRpc,
   sandboxActionRpc,
   saveTemplateRpc,
+  refResultSchema,
   statusRpc,
+  type OperationView,
 } from "../shared/rpc";
 import { sandboxSettings, type RepoConfig } from "../shared/settings";
 
@@ -43,6 +47,26 @@ export function useTemplates() {
   return useQuery({ queryKey: ["templates"], queryFn: () => list({}) });
 }
 
+/**
+ * Waits for a sandbox operation. Slow ones (an image pull, a template save, a recreation) outlast
+ * the daemon's 30 s plugin RPC limit, return as running, and are polled here.
+ */
+export function useAwaitOperation() {
+  const get = useRpc(getOperationRpc);
+  return async (start: OperationView): Promise<OperationView["result"]> => {
+    let operation: OperationView | null = start;
+    while (operation?.status === "running") {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      operation = await get({ id: operation.id });
+    }
+    if (!operation) throw new Error("The operation was lost: the plugin restarted. Check the sandbox and try again.");
+    if (operation.status === "failed") throw new Error(operation.error ?? "The operation failed.");
+    return operation.result;
+  };
+}
+
+const stopResultSchema = z.object({ graceful: z.boolean() });
+
 /** Mutations change sandboxes and provider state; refresh every view of them. */
 export function useInvalidateAll() {
   const queryClient = useQueryClient();
@@ -57,9 +81,13 @@ export function useEnsureProvider() {
 
 export function useSandboxAction() {
   const act = useRpc(sandboxActionRpc);
+  const awaitOperation = useAwaitOperation();
   const invalidate = useInvalidateAll();
   return useMutation({
-    mutationFn: (input: { name: string; action: "stop" | "remove" | "recreate" }) => act(input),
+    mutationFn: async (input: { name: string; action: "stop" | "remove" | "recreate" }) => {
+      const result = await awaitOperation(await act(input));
+      return input.action === "stop" ? stopResultSchema.parse(result) : null;
+    },
     onSettled: invalidate,
   });
 }
@@ -97,9 +125,10 @@ export function useRepoSettings(repoKey: string | null) {
 
 export function useSaveTemplate() {
   const saveRpc = useRpc(saveTemplateRpc);
+  const awaitOperation = useAwaitOperation();
   const invalidate = useInvalidateAll();
   return useMutation({
-    mutationFn: (input: { name: string; tag: string }) => saveRpc(input),
+    mutationFn: async (input: { name: string; tag: string }) => refResultSchema.parse(await awaitOperation(await saveRpc(input))),
     onSettled: invalidate,
   });
 }

@@ -8,12 +8,15 @@ import {
   prepareTemplateRpc,
   publishPortRpc,
   shellCommandRpc,
+  refResultSchema,
+  shellResultSchema,
   unpublishPortRpc,
   type BoundAgentInfo,
 } from "../shared/rpc";
 import { TEMPLATE_TAG_PATTERN } from "../shared/spec";
 import {
   useArchiveAgent,
+  useAwaitOperation,
   useInvalidateAll,
   useRepoSettings,
   useSandboxAction,
@@ -46,8 +49,10 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
   const invalidate = useInvalidateAll();
   const openTerminal = useOpenTerminal(workspaceId);
   const getShell = useRpc(shellCommandRpc);
+  const awaitOperation = useAwaitOperation();
   const openShell = useMutation({
-    mutationFn: async () => openTerminal(await getShell({ workspaceId, directory: directory ?? "" })),
+    mutationFn: async () =>
+      openTerminal(shellResultSchema.parse(await awaitOperation(await getShell({ workspaceId, directory: directory ?? "" })))),
     onSettled: invalidate,
   });
 
@@ -85,6 +90,13 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
           </Card>
         ) : null}
         {data ? <TemplateDivergence styles={styles} data={data} /> : null}
+        {data?.operations.map((operation) =>
+          operation.status === "running" ? (
+            <Text key={operation.id} style={styles.muted}>{`${operation.kind} of ${operation.target} in progress…`}</Text>
+          ) : operation.status === "failed" ? (
+            <Text key={operation.id} style={styles.error}>{`${operation.kind} of ${operation.target} failed: ${operation.error ?? ""}`}</Text>
+          ) : null,
+        )}
         <View style={styles.actions}>
           <Button
             styles={styles}
@@ -245,13 +257,14 @@ function ServicesSection({ styles, data }: { styles: Styles; data: Description }
   const invalidate = useInvalidateAll();
   const publishRpc = useRpc(publishPortRpc);
   const unpublishRpc = useRpc(unpublishPortRpc);
+  const awaitOperation = useAwaitOperation();
   const publish = useMutation({
-    mutationFn: (input: { guestPort: number; allInterfaces: boolean; hostPort: number | null }) =>
-      publishRpc({ name: data.name, ...input }),
+    mutationFn: async (input: { guestPort: number; allInterfaces: boolean; hostPort: number | null }) =>
+      awaitOperation(await publishRpc({ name: data.name, ...input })),
     onSettled: invalidate,
   });
   const unpublish = useMutation({
-    mutationFn: (guestPort: number) => unpublishRpc({ name: data.name, guestPort }),
+    mutationFn: async (guestPort: number) => awaitOperation(await unpublishRpc({ name: data.name, guestPort })),
     onSettled: invalidate,
   });
   const { repo, save } = useRepoSettings(data.repoKey);
@@ -405,12 +418,13 @@ function TemplateSection({
   const openTerminal = useOpenTerminal(workspaceId);
   const prepareRpc = useRpc(prepareTemplateRpc);
   const finishRpc = useRpc(finishTemplateRpc);
+  const awaitOperation = useAwaitOperation();
   const prepare = useMutation({
-    mutationFn: async () => openTerminal(await prepareRpc({ workspaceId, directory })),
+    mutationFn: async () => openTerminal(shellResultSchema.parse(await awaitOperation(await prepareRpc({ workspaceId, directory })))),
     onSettled: invalidate,
   });
   const finish = useMutation({
-    mutationFn: (input: { name: string; tag: string }) => finishRpc(input),
+    mutationFn: async (input: { name: string; tag: string }) => refResultSchema.parse(await awaitOperation(await finishRpc(input))),
     onSettled: invalidate,
   });
   const [selectError, setSelectError] = useState<string | null>(null);

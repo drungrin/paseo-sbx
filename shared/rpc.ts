@@ -1,6 +1,25 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+const operationSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  /** Sandbox name the operation works on. */
+  target: z.string(),
+  status: z.enum(["running", "done", "failed"]),
+  error: z.string().nullable(),
+  result: z.json().nullable(),
+  startedAt: z.number(),
+});
+/** A sandbox operation; slow ones return as running and are polled with `operation.get`. */
+export type OperationView = z.infer<typeof operationSchema>;
+
+export const getOperationRpc = defineRpc({
+  name: "operation.get",
+  input: z.object({ id: z.string() }),
+  output: operationSchema.nullable(),
+});
+
 const providerStatusSchema = z.object({
   /** An entry exists under `agents.providers`. */
   configured: z.boolean(),
@@ -96,6 +115,8 @@ export const describeSandboxRpc = defineRpc({
     templatePrep: z.string().nullable(),
     /** Other sandboxes created for the same repo (other worktrees, older isolation modes). */
     siblings: z.array(z.string()),
+    /** Operations on this sandbox or the repo's preparation sandbox, running or recently finished. */
+    operations: z.array(operationSchema),
     services: z.object({
       /** When the guest last reported its listening ports (epoch seconds); null before any report. */
       snapshotAt: z.number().nullable(),
@@ -122,20 +143,20 @@ export const publishPortRpc = defineRpc({
     allInterfaces: z.boolean(),
     hostPort: z.number().int().min(1).max(65535).nullable(),
   }),
-  output: z.object({ ok: z.literal(true) }),
+  output: operationSchema,
 });
 
 export const unpublishPortRpc = defineRpc({
   name: "ports.unpublish",
   input: z.object({ name: z.string(), guestPort: z.number().int().min(1).max(65535) }),
-  output: z.object({ ok: z.literal(true) }),
+  output: operationSchema,
 });
 
 export const sandboxActionRpc = defineRpc({
   name: "sandbox.action",
   input: z.object({ name: z.string(), action: z.enum(["stop", "remove", "recreate"]) }),
-  /** `graceful` is false when a stop could not shut the VM's Docker down first. */
-  output: z.object({ ok: z.literal(true), graceful: z.boolean().optional() }),
+  /** A stop's result is `{ graceful }`, false when it could not shut the VM's Docker down first. */
+  output: operationSchema,
 });
 
 export const memoryRpc = defineRpc({
@@ -161,10 +182,11 @@ export const memoryRpc = defineRpc({
 
 const shellSchema = z.object({ name: z.string(), command: z.string(), args: z.array(z.string()) });
 
+/** Result: the shell (`{ name, command, args }`). */
 export const shellCommandRpc = defineRpc({
   name: "sandbox.shell",
   input: workspaceTargetSchema,
-  output: shellSchema,
+  output: operationSchema,
 });
 
 const templateSchema = z.object({
@@ -184,10 +206,11 @@ export const listTemplatesRpc = defineRpc({
   output: z.object({ templates: z.array(templateSchema) }),
 });
 
+/** Result: `{ ref }`. */
 export const saveTemplateRpc = defineRpc({
   name: "template.save",
   input: z.object({ name: z.string(), tag: z.string() }),
-  output: z.object({ ref: z.string() }),
+  output: operationSchema,
 });
 
 export const removeTemplateRpc = defineRpc({
@@ -196,16 +219,19 @@ export const removeTemplateRpc = defineRpc({
   output: z.object({ ok: z.literal(true) }),
 });
 
-/** Creates (or reuses) the repo's preparation sandbox and returns a shell into it. */
+/** Creates (or reuses) the repo's preparation sandbox. Result: its shell plus `repoKey`. */
 export const prepareTemplateRpc = defineRpc({
   name: "template.prepare",
   input: workspaceTargetSchema,
-  output: shellSchema.extend({ repoKey: z.string() }),
+  output: operationSchema,
 });
 
-/** Saves the preparation sandbox as a template and removes it. */
+/** Saves the preparation sandbox as a template and removes it. Result: `{ ref }`. */
 export const finishTemplateRpc = defineRpc({
   name: "template.finish",
   input: z.object({ name: z.string(), tag: z.string() }),
-  output: z.object({ ref: z.string() }),
+  output: operationSchema,
 });
+
+export const shellResultSchema = shellSchema;
+export const refResultSchema = z.object({ ref: z.string() });
