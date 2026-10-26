@@ -8,11 +8,13 @@ import {
   listTemplatesRpc,
   memoryRpc,
   prepareTemplateRpc,
+  publishPortRpc,
   removeTemplateRpc,
   sandboxActionRpc,
   saveTemplateRpc,
   shellCommandRpc,
   statusRpc,
+  unpublishPortRpc,
 } from "../shared/rpc";
 import type { SandboxSettings } from "../shared/settings";
 import { memoryMiB } from "../shared/spec";
@@ -20,6 +22,7 @@ import type { ServerDeps } from "./hooks";
 import { ensureProvider, providerStatus } from "./provider";
 import { activeAgentsBySandbox } from "./agents";
 import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
+import { actualPublications, internalPorts, publishPort, readListeners, unpublishPort } from "./ports";
 import { recreateBlockers, recreateSandbox } from "./recreate";
 import { repoDisplayName, repoIdentity } from "./repo";
 import { listSandboxes, prepareSandbox, removeSandbox, sbxHealth, shellCommand, stopSandbox } from "./sbx";
@@ -108,7 +111,41 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       siblings: sandboxes
         .filter((entry) => entry.kind === "working" && entry.repoKey === spec.repoKey && entry.name !== spec.name)
         .map((entry) => entry.name),
+      services: await services(spec.name, spec.claudeConfigDir, Boolean(sandbox)),
     };
+  });
+
+  async function services(name: string, claudeConfigDir: string, exists: boolean) {
+    const state = readSandboxState(paths, name);
+    const snapshot = readListeners(claudeConfigDir);
+    const hidden = new Set([...internalPorts(claudeConfigDir), ...(state?.publications ?? []).map((entry) => entry.relayPort)]);
+    const actual = exists ? await actualPublications(deps, name) : [];
+    return {
+      snapshotAt: snapshot?.at ?? null,
+      listeners: (snapshot?.listeners ?? []).filter((listener) => !hidden.has(listener.port)),
+      publications: (state?.publications ?? []).map((publication) => ({
+        guestPort: publication.guestPort,
+        allInterfaces: publication.allInterfaces,
+        reserved: publication.reserved,
+        auto: publication.auto ?? false,
+        hostPort:
+          actual.find(
+            (entry) =>
+              entry.sandbox_port === publication.relayPort &&
+              entry.host_ip === (publication.allInterfaces ? "0.0.0.0" : "127.0.0.1"),
+          )?.host_port ?? null,
+      })),
+    };
+  }
+
+  server.handle(publishPortRpc, async (input, { paseo }) => {
+    await publishPort(deps, paseo, input);
+    return { ok: true as const };
+  });
+
+  server.handle(unpublishPortRpc, async ({ name, guestPort }) => {
+    await unpublishPort(deps, name, guestPort);
+    return { ok: true as const };
   });
 
   server.handle(sandboxActionRpc, async ({ name, action }, { paseo }) => {

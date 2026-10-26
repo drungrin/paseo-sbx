@@ -27,6 +27,7 @@ Then open **Sandboxes** in the sidebar and press **Configure** to register the `
 | Wrapper (`paseo-sbx-claude.cjs`) | Host | Creates the sandbox, reconciles its network policy, starts the loopback relay, runs the host's Claude Code inside the VM |
 | `guest-supervisor.py` | Sandbox | Feeds Claude's stdin and stops its process tree when the session ends |
 | `loopback-forward.py` | Sandbox | Relays guest `127.0.0.1:<port>` to the host's loopback |
+| `guest-agent.py` | Sandbox | Runs the relays of published ports and reports the guest's listening ports |
 
 The server bundle cannot read files from the plugin directory, so the plugin writes the launcher, the wrapper and the guest helpers to `~/.local/state/paseo-sbx/bin` on startup and registers the provider with `config.patch`, keeping any label, env or model fields you customized on that entry.
 
@@ -49,6 +50,7 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - **Templates.** A template is a saved sandbox filesystem in the Paseo instance (`sbx template save`, run on a pseudo-terminal because sbx 0.49 refuses to save without one). It does not include the images of the VM's own Docker. Prepare one in a clean sandbox, without your variables or credentials: saving a working sandbox captures `/home/agent`, login tokens included.
 - **Recreate needs archived agents.** The plugin API can neither close nor reopen an agent's runtime, and a resident agent can start a turn at any time, so the plugin recreates a sandbox only when every agent bound to it is archived and no session runs. The server holds the sandbox lock for the whole operation and marks it so new launches fail fast.
 - **Memory without entering the VM.** Each VM's resident memory is read from its `containerd-shim-nerdbox-v1` process, matched to the sandbox through the `config.json` in the process's working directory. Any `sbx exec` would postpone the auto-stop, and polling through it would keep VMs running.
+- **Every publication goes through a relay.** sbx publishes only what listens on the VM's external interface, and dev servers often listen on loopback. The guest agent listens on a port of its own (41000-41999) and forwards to the service's port on the guest loopback, which also reaches services listening on `0.0.0.0`. Its own port keeps it from blocking the service if the service later binds every address. The agent writes the listening ports to the sandbox's Claude config dir, the one mount both sides can write, so the panel lists them without `sbx exec`; the host reads that file as untrusted input. Publications are kept per sandbox and reconciled at every launch; a repository's auto-published ports are added there. On every address, sbx needs an explicit host port, so the plugin picks one and keeps it.
 - **No stop on archive.** Archiving an agent closes its runtime, and the VM stops 30 seconds after its last session. What keeps VMs running is agents that are not archived; the plugin API cannot close their runtimes, so the Sandboxes screen lists them with an Archive action.
 - **Invalid settings fail instead of defaulting.** Falling back to defaults could silently turn routing off or reopen the network policy. The plugin keeps the last valid settings it read; without any, `claude-sbx` sessions and routed agent creation fail with a message pointing to the settings screen.
 
@@ -69,6 +71,7 @@ Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_`
 - **`claude-sbx` agents fail with "missing PASEO_SBX_SPEC"**: the plugin is disabled or failed to load (`paseo plugin ls`).
 - **The Sandboxes screen shows the daemon as unavailable**: run `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx daemon status`. A locked keyring is the usual cause.
 - **Agents cannot reach a host service**: add its port under **Extra host ports**. Inside the sandbox, `127.0.0.1:<port>` is relayed to the host.
+- **A published port shows "not published"**: its host port was taken when the sandbox started. Pick another fixed port, or leave it empty.
 - **Wrapper logs** appear in the daemon log as Claude Agent SDK stderr lines prefixed with `[paseo-sbx]`.
 
 ## Development

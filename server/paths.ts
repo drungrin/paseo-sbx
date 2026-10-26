@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   FORWARDER_SOURCE,
+  GUEST_AGENT_SOURCE,
   SUPERVISOR_SOURCE,
   WAIT_PORTS_SOURCE,
   WRAPPER_SOURCE,
@@ -55,6 +56,7 @@ function binFiles(paths: PluginPaths) {
     { name: "loopback-forward.py", source: FORWARDER_SOURCE, mode: 0o644 },
     { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },
     { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
+    { name: "guest-agent.py", source: GUEST_AGENT_SOURCE, mode: 0o644 },
   ];
 }
 

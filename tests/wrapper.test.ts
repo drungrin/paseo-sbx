@@ -71,6 +71,7 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
     cpus: 0,
     networkAllow: ["**"],
     forwardPorts: [],
+    autoPublish: [],
     env: { LICENSE_KEY: "s3cret-value" },
     claudeConfigDir: join(state, "claude", "paseo-workspace-0000abcd"),
     ...overrides,
@@ -185,7 +186,7 @@ describe("wrapper", () => {
 
     // Secrets reach the guest through a private env file: never on a command line, never in
     // the environment of an sbx process (which could start the sandbox daemon with it).
-    const exec = first.calls.find((call) => call.args[0] === "exec");
+    const exec = first.calls.find((call) => call.args[0] === "exec" && call.args[1] === "-i");
     expect(exec?.args.join(" ")).not.toContain("s3cret-value");
     expect(exec?.args).toContain("--env-file");
     for (const call of first.calls) {
@@ -385,7 +386,7 @@ describe("wrapper hardening", () => {
     expect(guest.env.SPECIAL).toBe(`a=b "c" #d  'e'`);
     expect(guest.env.PEM).toBe("line1\nline2");
     expect(result.stderr).toContain("passing PEM through the sbx client environment");
-    const exec = result.calls.find((call) => call.args[0] === "exec");
+    const exec = result.calls.find((call) => call.args[0] === "exec" && call.args[1] === "-i");
     expect(exec?.args).toEqual(expect.arrayContaining(["-e", "PEM"]));
     expect(exec?.envNames).not.toContain("SPECIAL");
   });
@@ -503,6 +504,61 @@ describe("wrapper and the plugin's sandbox operations", () => {
     session.kill("SIGTERM");
     await exited(session);
     expect(readdirSync(leasesDir)).toEqual([]);
+  });
+});
+
+describe("publications", () => {
+  function fakeState(): { ports?: Record<string, { host_ip: string; host_port: number; sandbox_port: number }[]> } {
+    return JSON.parse(readFileSync(join(root, "sbx-state.json"), "utf8"));
+  }
+
+  function sandboxState(sandbox: SandboxSpec) {
+    return JSON.parse(readFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), "utf8"));
+  }
+
+  it("publishes the repository's auto-published ports through relays and tells the guest agent", () => {
+    const sandbox = spec({ autoPublish: [5173] });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(0);
+    expect(fakeState().ports?.[sandbox.name]).toEqual([
+      { host_ip: "127.0.0.1", host_port: 32768, sandbox_port: 41173, protocol: "tcp4" },
+    ]);
+    expect(sandboxState(sandbox).publications).toEqual([
+      { guestPort: 5173, relayPort: 41173, hostPort: null, allInterfaces: false, reserved: false, auto: true },
+    ]);
+    const control = JSON.parse(readFileSync(join(sandbox.claudeConfigDir, ".paseo-sbx", "relays.json"), "utf8"));
+    expect(control.relays).toEqual([{ relayPort: 41173, guestPort: 5173 }]);
+    // Ensure mode starts the relays when there are publications.
+    expect(result.calls.some((call) => call.args[0] === "exec")).toBe(true);
+  });
+
+  it("unpublishes a port that left the repository's auto-publish list", () => {
+    const sandbox = spec({ autoPublish: [5173] });
+    run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify({ ...sandbox, autoPublish: [] }) } });
+    expect(result.status).toBe(0);
+    expect(fakeState().ports?.[sandbox.name]).toEqual([]);
+    expect(sandboxState(sandbox).publications).toEqual([]);
+    expect(result.calls.some((call) => call.args[0] === "exec")).toBe(false);
+  });
+
+  it("gives an every-address publication a fixed host port, and keeps the session when a port is taken", () => {
+    const sandbox = spec();
+    run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    const state = sandboxState(sandbox);
+    state.publications = [
+      { guestPort: 3000, relayPort: 41000, hostPort: null, allInterfaces: true, reserved: false },
+      { guestPort: 8080, relayPort: 41080, hostPort: 18080, allInterfaces: false, reserved: true },
+    ];
+    writeFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), JSON.stringify(state));
+    const result = run([], { env: { [SPEC_ENV]: JSON.stringify(sandbox), FAKE_SBX_TAKEN_PORTS: "18080" }, input: "{}\n" });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("could not publish guest port 8080");
+    const everyAddress = sandboxState(sandbox).publications[0];
+    expect(everyAddress.hostPort).toBeGreaterThan(0);
+    expect(fakeState().ports?.[sandbox.name]).toEqual([
+      { host_ip: "0.0.0.0", host_port: everyAddress.hostPort, sandbox_port: 41000, protocol: "tcp4" },
+    ]);
   });
 });
 

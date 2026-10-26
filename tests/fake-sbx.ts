@@ -27,6 +27,26 @@ if (args[0] === 'ls') {
   save();
 } else if (args[0] === 'stop' || args[0] === 'policy') {
   // accepted
+} else if (args[0] === 'ports') {
+  state.ports = state.ports || {};
+  const name = args[1];
+  const bindings = state.ports[name] || [];
+  const taken = (process.env.FAKE_SBX_TAKEN_PORTS || '').split(',').filter(Boolean).map(Number);
+  if (args[2] === '--json') {
+    process.stdout.write(JSON.stringify(bindings));
+  } else if (args[2] === '--publish') {
+    const parts = args[3].split(':');
+    const sandboxPort = Number(parts.pop());
+    const hostPort = parts.length > 0 ? Number(parts.pop()) : 32768 + bindings.length;
+    const hostIp = parts.length > 0 ? parts.pop() : '127.0.0.1';
+    if (taken.includes(hostPort)) { process.stderr.write('error: port not available'); process.exit(1); }
+    bindings.push({ host_ip: hostIp, host_port: hostPort, sandbox_port: sandboxPort, protocol: 'tcp4' });
+    state.ports[name] = bindings;
+    save();
+  } else if (args[2] === '--unpublish') {
+    state.ports[name] = bindings.filter((entry) => entry.host_ip + ':' + entry.host_port + ':' + entry.sandbox_port + '/' + entry.protocol !== args[3]);
+    save();
+  }
 } else if (args[0] === 'template' && args[1] === 'ls') {
   process.stdout.write(JSON.stringify(state.templates));
 } else if (args[0] === 'template' && args[1] === 'save') {
@@ -62,6 +82,9 @@ if (args[0] === 'ls') {
     break;
   }
   if (!state.sandboxes.includes(args[i])) { process.stderr.write('no such sandbox'); process.exit(1); }
+  // The plugin's guest helpers (relays, the guest agent) are long-running guest processes: do not
+  // start them on the test host.
+  if (args[i + 1] === 'sh' && String(args[i + 3] || '').includes('guest-agent.py')) process.exit(0);
   const guest = cp.spawn(args[i + 1], args.slice(i + 2), { cwd, env, stdio: ['pipe', 'inherit', 'inherit'], detached: true });
   if (process.env.FAKE_SBX_DETACH) {
     // Like a client that exits on stdin EOF while the guest keeps running.

@@ -24,6 +24,10 @@ Open **Sandboxes** in the sidebar and press **Configure** to register the provid
 - **Allowed destinations** and **Extra host ports**: the sandbox network policy and additional host loopback ports to relay.
 - **Excluded paths**: workspaces that keep running Claude on the host when routing is on.
 
+## Services
+
+The workspace **Sandbox** panel lists the ports listening inside the VM. **Publish** makes one reachable from the host, on `127.0.0.1` by default or on every host address, with a port picked for you or fixed. That is how you check an app an agent started in the sandbox, without building it on the host. A port can be published for every sandbox of the repository, and services listening only on the VM's loopback work too.
+
 The **Sandboxes** screen shows the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and lists the agents keeping each VM running, with an **Archive** action. The workspace **Sandbox** panel shows the sandbox, the agents keeping it running, its template, mounts and variables, and opens a terminal inside it for manual checks. Settings for a repository apply to every worktree of it.
 
 ## Limits

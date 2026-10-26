@@ -18,6 +18,21 @@ export interface SandboxState {
   policies?: string[];
   /** A template preparation sandbox, not a working one. */
   kind?: "template-prep";
+  /** Guest ports published through relays; the wrapper reconciles sbx with this list. */
+  publications?: Publication[];
+}
+
+export interface Publication {
+  guestPort: number;
+  /** The guest agent's relay port (41000-41999) that sbx publishes. */
+  relayPort: number;
+  /** Fixed host port; null lets sbx pick one, which changes when the VM restarts. */
+  hostPort: number | null;
+  allInterfaces: boolean;
+  /** The host port was chosen by you rather than allocated. */
+  reserved: boolean;
+  /** Added from the repository's auto-publish list; leaves when the port leaves that list. */
+  auto?: boolean;
 }
 
 function statePath(paths: PluginPaths, name: string): string {

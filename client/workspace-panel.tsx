@@ -3,7 +3,14 @@ import { SettingsInput, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { finishTemplateRpc, prepareTemplateRpc, shellCommandRpc, type BoundAgentInfo } from "../shared/rpc";
+import {
+  finishTemplateRpc,
+  prepareTemplateRpc,
+  publishPortRpc,
+  shellCommandRpc,
+  unpublishPortRpc,
+  type BoundAgentInfo,
+} from "../shared/rpc";
 import { TEMPLATE_TAG_PATTERN } from "../shared/spec";
 import {
   useArchiveAgent,
@@ -127,6 +134,7 @@ export function WorkspacePanel({ theme, layout, workspaceId }: PluginWorkspacePa
       </Section>
 
       {data && data.agents.length > 0 ? <AgentsSection styles={styles} agents={data.agents} /> : null}
+      {data ? <ServicesSection styles={styles} data={data} /> : null}
       {data ? <TemplateSection styles={styles} data={data} workspaceId={workspaceId} directory={directory} /> : null}
       {data ? (
         // Keyed so a different repo or a saved value starts from a fresh draft.
@@ -219,6 +227,153 @@ function AgentsSection({ styles, agents }: { styles: Styles; agents: BoundAgentI
       </Card>
       <Text style={styles.muted}>Idle agents keep the VM running. Archiving the last one lets it stop on its own.</Text>
       {archive.error ? <Text style={styles.error}>{errorMessage(archive.error)}</Text> : null}
+    </Section>
+  );
+}
+
+function formatAge(at: number): string {
+  const seconds = Math.max(0, Math.round(Date.now() / 1000 - at));
+  return seconds < 90 ? `${seconds} s ago` : `${Math.round(seconds / 60)} min ago`;
+}
+
+function hostBinding(publication: Description["services"]["publications"][number]): string {
+  if (publication.hostPort === null) return "not published";
+  return publication.allInterfaces ? `port ${publication.hostPort} on every host address` : `127.0.0.1:${publication.hostPort}`;
+}
+
+function ServicesSection({ styles, data }: { styles: Styles; data: Description }) {
+  const invalidate = useInvalidateAll();
+  const publishRpc = useRpc(publishPortRpc);
+  const unpublishRpc = useRpc(unpublishPortRpc);
+  const publish = useMutation({
+    mutationFn: (input: { guestPort: number; allInterfaces: boolean; hostPort: number | null }) =>
+      publishRpc({ name: data.name, ...input }),
+    onSettled: invalidate,
+  });
+  const unpublish = useMutation({
+    mutationFn: (guestPort: number) => unpublishRpc({ name: data.name, guestPort }),
+    onSettled: invalidate,
+  });
+  const { repo, save } = useRepoSettings(data.repoKey);
+  const [allInterfaces, setAllInterfaces] = useState(false);
+  const [manualPort, setManualPort] = useState("");
+  const [hostPort, setHostPort] = useState("");
+  const [repoError, setRepoError] = useState<string | null>(null);
+  const { services } = data;
+  const running = data.status === "running";
+  const published = new Set(services.publications.map((publication) => publication.guestPort));
+  const parsedManual = Number(manualPort);
+  const parsedHost = hostPort.trim() === "" ? null : Number(hostPort);
+  const validPort = (value: number) => Number.isInteger(value) && value > 0 && value < 65536;
+  const hostInvalid = parsedHost !== null && !validPort(parsedHost);
+  const publishLabel = running ? "Publish" : "Publish (starts the VM)";
+
+  function toggleAuto(guestPort: number, enabled: boolean) {
+    if (!repo) return;
+    const autoPublish = enabled
+      ? [...new Set([...repo.autoPublish, guestPort])]
+      : repo.autoPublish.filter((port) => port !== guestPort);
+    setRepoError(null);
+    save({ autoPublish }).catch((error: unknown) => setRepoError(errorMessage(error)));
+  }
+
+  if (!data.status) {
+    return (
+      <Section styles={styles} title="Services">
+        <Text style={styles.muted}>Services show up once the sandbox exists.</Text>
+      </Section>
+    );
+  }
+
+  return (
+    <Section styles={styles} title="Services">
+      <Text style={styles.muted}>
+        {services.snapshotAt === null
+          ? "No report of listening ports yet: it starts with the next agent or shell."
+          : running
+            ? `Listening ports in the VM, reported ${formatAge(services.snapshotAt)}.`
+            : `The VM is stopped; ports as of ${formatAge(services.snapshotAt)}.`}
+      </Text>
+      {services.listeners.length > 0 ? (
+        <Card styles={styles}>
+          {services.listeners.map((listener, index) => (
+            <View key={listener.port} style={[styles.row, index === 0 ? styles.firstRow : null]}>
+              <View style={{ flexShrink: 1 }}>
+                <Text style={styles.label}>{`Port ${listener.port}`}</Text>
+                <Text style={styles.muted}>{listener.addresses.join(", ")}</Text>
+              </View>
+              {published.has(listener.port) ? (
+                <Text style={styles.value}>published</Text>
+              ) : (
+                <Button
+                  styles={styles}
+                  label={publishLabel}
+                  disabled={publish.isPending || hostInvalid}
+                  onPress={() => publish.mutate({ guestPort: listener.port, allInterfaces, hostPort: parsedHost })}
+                />
+              )}
+            </View>
+          ))}
+        </Card>
+      ) : null}
+
+      <Card styles={styles}>
+        <SettingsSwitch
+          label="Listen on every host address"
+          hint="Off publishes on 127.0.0.1 only. On, anyone who reaches this host can open the service, without authentication."
+          value={allInterfaces}
+          onValueChange={setAllInterfaces}
+        />
+        <SettingsInput
+          label="Fixed host port"
+          hint="Empty picks one; a loopback port picked by sbx changes when the VM restarts."
+          initialValue={hostPort}
+          placeholder="any"
+          error={hostInvalid ? "Enter a port from 1 to 65535" : undefined}
+          onChangeText={setHostPort}
+        />
+        <SettingsInput label="Guest port" hint="Publish a port before its service starts." initialValue={manualPort} placeholder="5173" onChangeText={setManualPort} />
+      </Card>
+      <View style={styles.actions}>
+        <Button
+          styles={styles}
+          label={publishLabel}
+          disabled={publish.isPending || !validPort(parsedManual) || hostInvalid}
+          onPress={() => publish.mutate({ guestPort: parsedManual, allInterfaces, hostPort: parsedHost })}
+        />
+      </View>
+
+      {services.publications.length > 0 ? (
+        <Card styles={styles}>
+          {services.publications.map((publication, index) => (
+            <View key={publication.guestPort} style={[styles.row, index === 0 ? styles.firstRow : null]}>
+              <View style={{ flexShrink: 1 }}>
+                <Text style={styles.label}>{`Guest port ${publication.guestPort}`}</Text>
+                <Text style={publication.hostPort === null ? styles.error : styles.mono}>{hostBinding(publication)}</Text>
+              </View>
+              <View style={styles.actions}>
+                {repo ? (
+                  <Button
+                    styles={styles}
+                    label={repo.autoPublish.includes(publication.guestPort) ? "Stop auto-publishing" : "Always publish in this repo"}
+                    onPress={() => toggleAuto(publication.guestPort, !repo.autoPublish.includes(publication.guestPort))}
+                  />
+                ) : null}
+                <Button
+                  styles={styles}
+                  label="Unpublish"
+                  disabled={unpublish.isPending}
+                  onPress={() => unpublish.mutate(publication.guestPort)}
+                />
+              </View>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+      {publish.isPending || unpublish.isPending ? <Text style={styles.muted}>Updating the publications…</Text> : null}
+      {publish.error ? <Text style={styles.error}>{errorMessage(publish.error)}</Text> : null}
+      {unpublish.error ? <Text style={styles.error}>{errorMessage(unpublish.error)}</Text> : null}
+      {repoError ? <Text style={styles.error}>{repoError}</Text> : null}
     </Section>
   );
 }

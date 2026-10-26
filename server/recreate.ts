@@ -69,7 +69,7 @@ export async function recreateSandbox(deps: ServerDeps, paseo: PaseoApi, name: s
       const blockers = await recreateBlockers(paths, paseo, name);
       if (blockers.length > 0) throw new Error(`cannot recreate ${name}: ${blockers.join("; ")}`);
       writeRecreatingMarker(paths, name, { ...marker, phase: "removing" });
-      await removeSandboxLocked(paths, name);
+      await removeSandboxLocked(paths, name, { keepPublications: true });
       writeRecreatingMarker(paths, name, { ...marker, phase: "creating" });
       await prepareSandbox(paths, spec, token);
     });

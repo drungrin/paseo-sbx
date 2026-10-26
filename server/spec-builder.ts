@@ -199,6 +199,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     cpus: settings.cpus,
     networkAllow: settings.networkAllow,
     forwardPorts: settings.forwardPorts,
+    autoPublish: repo?.autoPublish ?? [],
     env: forwarded,
     claudeConfigDir,
   };

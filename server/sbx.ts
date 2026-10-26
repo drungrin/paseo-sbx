@@ -5,7 +5,7 @@ import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
 import type { SandboxSummary } from "../shared/rpc";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
-import { readSandboxState, removeSandboxState } from "./state";
+import { readSandboxState, removeSandboxState, writeSandboxState } from "./state";
 
 export interface SbxResult {
   code: number;
@@ -148,10 +148,19 @@ export async function removeSandbox(paths: PluginPaths, name: string): Promise<v
   await withSandboxLock(paths, name, newLockToken(), () => removeSandboxLocked(paths, name));
 }
 
-/** `removeSandbox` for callers that already hold the sandbox lock. */
-export async function removeSandboxLocked(paths: PluginPaths, name: string): Promise<void> {
+/**
+ * `removeSandbox` for callers that already hold the sandbox lock. A recreation keeps the
+ * publications chosen for the sandbox: the wrapper reapplies them to the new one.
+ */
+export async function removeSandboxLocked(
+  paths: PluginPaths,
+  name: string,
+  options: { keepPublications?: boolean } = {},
+): Promise<void> {
+  const publications = options.keepPublications ? readSandboxState(paths, name)?.publications : undefined;
   await runSbxOk(paths, ["rm", "-f", name], `sbx rm ${name}`);
   removeSandboxState(paths, name);
+  if (publications) writeSandboxState(paths, name, { publications });
   rmSync(join(paths.locksDir, `${name}.leases`), { recursive: true, force: true });
 }
 

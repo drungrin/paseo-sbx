@@ -96,7 +96,39 @@ export const describeSandboxRpc = defineRpc({
     templatePrep: z.string().nullable(),
     /** Other sandboxes created for the same repo (other worktrees, older isolation modes). */
     siblings: z.array(z.string()),
+    services: z.object({
+      /** When the guest last reported its listening ports (epoch seconds); null before any report. */
+      snapshotAt: z.number().nullable(),
+      listeners: z.array(z.object({ port: z.number(), addresses: z.array(z.string()) })),
+      publications: z.array(
+        z.object({
+          guestPort: z.number(),
+          allInterfaces: z.boolean(),
+          reserved: z.boolean(),
+          auto: z.boolean(),
+          /** The host port sbx publishes it on now; null when it is not published (stopped, or the port was taken). */
+          hostPort: z.number().nullable(),
+        }),
+      ),
+    }),
   }),
+});
+
+export const publishPortRpc = defineRpc({
+  name: "ports.publish",
+  input: z.object({
+    name: z.string(),
+    guestPort: z.number().int().min(1).max(65535),
+    allInterfaces: z.boolean(),
+    hostPort: z.number().int().min(1).max(65535).nullable(),
+  }),
+  output: z.object({ ok: z.literal(true) }),
+});
+
+export const unpublishPortRpc = defineRpc({
+  name: "ports.unpublish",
+  input: z.object({ name: z.string(), guestPort: z.number().int().min(1).max(65535) }),
+  output: z.object({ ok: z.literal(true) }),
 });
 
 export const sandboxActionRpc = defineRpc({

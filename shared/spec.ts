@@ -31,6 +31,8 @@ export interface SandboxSpec {
   cpus: number;
   networkAllow: string[];
   forwardPorts: number[];
+  /** Guest ports of the repository published on ephemeral host ports at every launch. */
+  autoPublish: number[];
   env: Record<string, string>;
   claudeConfigDir: string;
 }

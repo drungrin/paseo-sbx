@@ -9,6 +9,7 @@ import { writeBinding } from "../server/bindings";
 import type { ServerDeps } from "../server/hooks";
 import { installBinFiles, pluginPaths, type PluginPaths } from "../server/paths";
 import { recreateSandbox } from "../server/recreate";
+import { publishPort, readListeners, unpublishPort } from "../server/ports";
 import { listSandboxes, prepareSandbox, stopSandbox } from "../server/sbx";
 import { buildSpec } from "../server/spec-builder";
 import { processStart, readSandboxState } from "../server/state";
@@ -157,6 +158,55 @@ describe("stop", () => {
     process.env.FAKE_SBX_ROOT_EXIT = "3";
     expect(await stopSandbox(paths, name)).toEqual({ graceful: false });
     expect(fake.calls().some((call) => call.args.join(" ") === `stop ${name}`)).toBe(true);
+  });
+});
+
+describe("ports", () => {
+  function portsOf(name: string) {
+    return (JSON.parse(readFileSync(fake.env.FAKE_SBX_STATE, "utf8")).ports?.[name] ?? []) as { host_ip: string; host_port: number; sandbox_port: number }[];
+  }
+
+  it("publishes a guest port through its relay, on every address with a reserved port, and unpublishes it", async () => {
+    const name = await createdSandbox();
+    const paseo = fakePaseo(() => []);
+    await publishPort(deps, paseo, { name, guestPort: 5173, allInterfaces: false, hostPort: null });
+    expect(portsOf(name)).toEqual([{ host_ip: "127.0.0.1", host_port: 32768, sandbox_port: 41173, protocol: "tcp4" }]);
+
+    await publishPort(deps, paseo, { name, guestPort: 5173, allInterfaces: true, hostPort: 45173 });
+    expect(portsOf(name)).toEqual([{ host_ip: "0.0.0.0", host_port: 45173, sandbox_port: 41173, protocol: "tcp4" }]);
+    expect(readSandboxState(paths, name)?.publications).toEqual([
+      { guestPort: 5173, relayPort: 41173, hostPort: 45173, allInterfaces: true, reserved: true, auto: false },
+    ]);
+
+    await unpublishPort(deps, name, 5173);
+    expect(portsOf(name)).toEqual([]);
+    expect(existsSync(join(paths.locksDir, name))).toBe(false);
+  });
+
+  it("refuses the plugin's own ports and a host port already in use", async () => {
+    const name = await createdSandbox();
+    const paseo = fakePaseo(() => []);
+    await expect(publishPort(deps, paseo, { name, guestPort: 41010, allInterfaces: false, hostPort: null })).rejects.toThrow("belongs to the plugin");
+    const busy = (await import("node:net")).createServer();
+    await new Promise<void>((resolve) => busy.listen(0, "127.0.0.1", resolve));
+    const taken = (busy.address() as { port: number }).port;
+    try {
+      await expect(publishPort(deps, paseo, { name, guestPort: 3000, allInterfaces: false, hostPort: taken })).rejects.toThrow("already taken");
+    } finally {
+      busy.close();
+    }
+  });
+
+  it("treats the guest's port report as untrusted", () => {
+    const dir = join(root, "cfg");
+    mkdirSync(join(dir, ".paseo-sbx"), { recursive: true });
+    const file = join(dir, ".paseo-sbx", "listeners.json");
+    writeFileSync(file, JSON.stringify({ at: 1, listeners: [{ port: 5173, addresses: ["127.0.0.1"] }] }));
+    expect(readListeners(dir)?.listeners).toEqual([{ port: 5173, addresses: ["127.0.0.1"] }]);
+    writeFileSync(file, JSON.stringify({ at: 1, listeners: [{ port: "x" }] }));
+    expect(readListeners(dir)).toBeNull();
+    writeFileSync(file, JSON.stringify({ at: 1, listeners: [], pad: "x".repeat(70_000) }));
+    expect(readListeners(dir)).toBeNull();
   });
 });
 

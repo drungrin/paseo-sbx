@@ -321,7 +321,10 @@ function ensureSandbox(spec, claude) {
     if (spec.cpus > 0) createArgs.push('--cpus', String(spec.cpus));
     if (spec.template) createArgs.push('-t', spec.template, '--pull', 'never');
     sbxOk(spec, createArgs.concat(['claude'], mounts), 'sbx create ' + spec.name);
+    // A recreated sandbox keeps the publications chosen for it; reconcilePublications reapplies them.
+    const previous = readState(spec);
     writeState(spec, {
+      publications: previous.publications || [],
       key: spec.key,
       repoKey: spec.repoKey,
       workspace: spec.workspace,
@@ -383,18 +386,122 @@ function ensurePolicy(spec, ports) {
   });
 }
 
-// Guest loopback ports relay to host.docker.internal, so URLs keep their 127.0.0.1 form.
-// The VM stops 30 s after its last session and takes the relay with it: ensure it per launch.
-function ensureForwarder(spec, ports) {
-  if (ports.length === 0) return;
+const RELAY_FIRST = 41000;
+const RELAY_LAST = 41999;
+
+// Same allocation as allocateRelayPort in server/ports.ts.
+function allocateRelayPort(publications, guestPort, avoid) {
+  const used = new Set(publications.map(function (publication) { return publication.relayPort; }).concat(avoid));
+  const span = RELAY_LAST - RELAY_FIRST + 1;
+  for (let i = 0; i < span; i++) {
+    const candidate = RELAY_FIRST + ((guestPort + i) % span);
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new WrapperError('no free relay port in ' + RELAY_FIRST + '-' + RELAY_LAST);
+}
+
+function freeHostPort() {
+  const result = cp.spawnSync(process.execPath, ['-e',
+    "const s=require('net').createServer();s.listen(0,'0.0.0.0',()=>{process.stdout.write(String(s.address().port));s.close();});",
+  ], { encoding: 'utf8', env: { ELECTRON_RUN_AS_NODE: '1' } });
+  const port = Number(result.stdout);
+  if (!(port > 0)) throw new WrapperError('could not find a free host port');
+  return port;
+}
+
+function publicationSpec(publication) {
+  if (publication.allInterfaces) return '0.0.0.0:' + publication.hostPort + ':' + publication.relayPort;
+  if (publication.hostPort) return '127.0.0.1:' + publication.hostPort + ':' + publication.relayPort;
+  return String(publication.relayPort);
+}
+
+function sameBinding(publication, actual) {
+  return (
+    actual.sandbox_port === publication.relayPort &&
+    actual.host_ip === (publication.allInterfaces ? '0.0.0.0' : '127.0.0.1') &&
+    (!publication.hostPort || actual.host_port === publication.hostPort)
+  );
+}
+
+// Every publication goes through a relay in the guest (guest-agent.py) on its own port in
+// 41000-41999, forwarding to the service's port on the guest loopback: sbx publishes only what
+// listens on the VM's external interface, and services that listen on 0.0.0.0 accept loopback
+// connections too. Publications live in the sandbox state; this reconciles sbx with them, adding
+// the repository's auto-published ports, and returns the relays the guest agent should run.
+function reconcilePublications(spec, internalPorts) {
+  const state = readState(spec);
+  const autoPublish = spec.autoPublish || [];
+  // Auto-published ports leave with the repository setting that added them.
+  const publications = (state.publications || []).filter(function (publication) {
+    return !publication.auto || autoPublish.includes(publication.guestPort);
+  });
+  for (const guestPort of autoPublish) {
+    if (publications.some(function (publication) { return publication.guestPort === guestPort; })) continue;
+    publications.push({
+      guestPort: guestPort,
+      relayPort: allocateRelayPort(publications, guestPort, internalPorts),
+      hostPort: null,
+      allInterfaces: false,
+      reserved: false,
+      auto: true,
+    });
+  }
+  for (const publication of publications) {
+    if (publication.allInterfaces && !publication.hostPort) publication.hostPort = freeHostPort();
+  }
+  // Listing does not start the VM; it also catches publications removed from the list.
+  const actual = JSON.parse(sbxOk(spec, ['ports', spec.name, '--json'], 'sbx ports') || '[]').filter(function (entry) {
+    return entry.sandbox_port >= RELAY_FIRST && entry.sandbox_port <= RELAY_LAST;
+  });
+  for (const entry of actual) {
+    if (publications.some(function (publication) { return sameBinding(publication, entry); })) continue;
+    const binding = entry.host_ip + ':' + entry.host_port + ':' + entry.sandbox_port + '/' + entry.protocol;
+    sbxOk(spec, ['ports', spec.name, '--unpublish', binding], 'sbx ports --unpublish ' + binding);
+  }
+  for (const publication of publications) {
+    if (actual.some(function (entry) { return sameBinding(publication, entry); })) continue;
+    const result = sbx(spec, ['ports', spec.name, '--publish', publicationSpec(publication)]);
+    if (result.status !== 0) {
+      // A taken host port must not stop the session: the panel shows the publication as missing.
+      log('could not publish guest port ' + publication.guestPort + ': ' + (result.stderr || result.stdout || '').trim().slice(-300));
+    }
+  }
+  state.publications = publications;
+  writeState(spec, state);
+  return publications.map(function (publication) {
+    return { relayPort: publication.relayPort, guestPort: publication.guestPort };
+  });
+}
+
+// The guest agent's control file and port snapshot live in the sandbox's Claude config dir, the
+// one mount both sides can write.
+function guestStateDir(spec) {
+  return path.join(spec.claudeConfigDir, '.paseo-sbx');
+}
+
+function writeRelays(spec, relays, internalPorts) {
+  const dir = guestStateDir(spec);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'relays.json');
+  fs.writeFileSync(file + '.tmp', JSON.stringify({ relays: relays, internal: internalPorts }));
+  fs.renameSync(file + '.tmp', file);
+}
+
+// One exec per launch: relays guest loopback ports to the host (Paseo's MCP server, loopback API
+// URLs) and keeps the guest agent running. The VM stops 30 s after its last session and takes
+// both with it, so this runs per launch.
+function ensureGuestHelpers(spec, ports) {
   const script = [
     'dir=$0',
-    'missing=$(python3 "$dir/wait-ports.py" --missing $1)',
-    '[ -z "$missing" ] && exit 0',
-    'nohup python3 "$dir/loopback-forward.py" $missing >>/tmp/paseo-sbx-forward.log 2>&1 &',
-    'python3 "$dir/wait-ports.py" --wait $missing',
+    'state=$1',
+    'missing=""',
+    'if [ -n "$2" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $2); fi',
+    'if [ -n "$missing" ]; then nohup python3 "$dir/loopback-forward.py" $missing >>/tmp/paseo-sbx-forward.log 2>&1 & fi',
+    'pid=$(cat /tmp/paseo-sbx-agent.pid 2>/dev/null)',
+    'if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then nohup python3 "$dir/guest-agent.py" "$state" >>/tmp/paseo-sbx-agent.log 2>&1 & fi',
+    'if [ -n "$missing" ]; then python3 "$dir/wait-ports.py" --wait $missing; fi',
   ].join('\n');
-  sbxOk(spec, ['exec', spec.name, 'sh', '-c', script, spec.binDir, ports.join(' ')], 'loopback forwarder');
+  sbxOk(spec, ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' ')], 'guest helpers');
 }
 
 // What the guest gets: Claude and Paseo variables from the session, the configured forwarded
@@ -526,8 +633,14 @@ function main() {
   const guest = guestEnv(spec);
   const ports = detectPorts(spec, guest);
   ensurePolicy(spec, ports);
-  if (args[0] === ENSURE_FLAG) return;
-  ensureForwarder(spec, ports);
+  const relays = withLock(path.join(spec.locksDir, spec.name), function () { return reconcilePublications(spec, ports); });
+  writeRelays(spec, relays, ports);
+  if (args[0] === ENSURE_FLAG) {
+    // Publications need their relays now; without any, preparing a sandbox does not enter it.
+    if (relays.length > 0) ensureGuestHelpers(spec, []);
+    return;
+  }
+  ensureGuestHelpers(spec, ports);
   log('sandbox=' + spec.name + ' cwd=' + process.cwd() + ' claude=' + claude);
   runInSandbox(spec, claude, guest);
 }
@@ -757,4 +870,133 @@ for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
 code = child.wait()
 cleanup()
 sys.exit(128 - code if code < 0 else code)
+`;
+
+/**
+ * Long-running guest process, one per VM. Every 2 s it reconciles the publication relays listed
+ * in `<state>/relays.json` (relay port on all guest interfaces → the service's port on the guest
+ * loopback) and writes the guest's listening TCP ports to `<state>/listeners.json`, so the host
+ * can show them without an `sbx exec` (which would postpone the auto-stop).
+ */
+export const GUEST_AGENT_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+import asyncio, json, os, sys, time
+
+STATE = sys.argv[1]
+RELAYS = os.path.join(STATE, "relays.json")
+LISTENERS = os.path.join(STATE, "listeners.json")
+
+
+async def pipe(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (ConnectionError, OSError):
+            pass
+
+
+def handler(guest_port):
+    async def handle(client_reader, client_writer):
+        for host in ("127.0.0.1", "::1"):
+            try:
+                reader, writer = await asyncio.open_connection(host, guest_port)
+                break
+            except OSError:
+                continue
+        else:
+            client_writer.close()
+            return
+        await asyncio.gather(pipe(client_reader, writer), pipe(reader, client_writer))
+    return handle
+
+
+def read_control():
+    try:
+        with open(RELAYS) as file:
+            data = json.load(file)
+        relays = {int(entry["relayPort"]): int(entry["guestPort"]) for entry in data.get("relays", [])}
+        return relays, {int(port) for port in data.get("internal", [])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, set()
+
+
+def address(hex_address):
+    if len(hex_address) == 8:
+        return ".".join(str(int(hex_address[i:i + 2], 16)) for i in (6, 4, 2, 0))
+    if hex_address == "0" * 32:
+        return "::"
+    if hex_address == "0" * 24 + "01000000":
+        return "::1"
+    return "ipv6"
+
+
+def listening():
+    found = {}
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table) as file:
+                rows = file.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            hex_address, hex_port = fields[1].split(":")
+            port = int(hex_port, 16)
+            found.setdefault(port, set()).add(address(hex_address))
+    return found
+
+
+def write_listeners(skip):
+    ports = [
+        {"port": port, "addresses": sorted(addresses)}
+        for port, addresses in sorted(listening().items())
+        if port not in skip
+    ][:500]
+    temporary = LISTENERS + ".tmp"
+    with open(temporary, "w") as file:
+        json.dump({"at": time.time(), "listeners": ports}, file)
+    os.replace(temporary, LISTENERS)
+
+
+async def main():
+    with open(os.environ.get("PASEO_SBX_AGENT_PID", "/tmp/paseo-sbx-agent.pid"), "w") as file:
+        file.write(str(os.getpid()))
+    os.makedirs(STATE, exist_ok=True)
+    servers = {}
+    while True:
+        relays, internal = read_control()
+        if relays is not None:
+            for relay_port in list(servers):
+                guest_port, server = servers[relay_port]
+                if relays.get(relay_port) != guest_port:
+                    server.close()
+                    del servers[relay_port]
+            for relay_port, guest_port in relays.items():
+                if relay_port in servers:
+                    continue
+                try:
+                    server = await asyncio.start_server(handler(guest_port), ["0.0.0.0", "::"], relay_port)
+                except OSError:
+                    try:
+                        server = await asyncio.start_server(handler(guest_port), "0.0.0.0", relay_port)
+                    except OSError as error:
+                        print(f"relay {relay_port} -> {guest_port}: {error}", file=sys.stderr, flush=True)
+                        continue
+                servers[relay_port] = (guest_port, server)
+        try:
+            write_listeners(set(servers) | internal)
+        except OSError as error:
+            print(f"listeners: {error}", file=sys.stderr, flush=True)
+        await asyncio.sleep(2)
+
+
+asyncio.run(main())
 `;
