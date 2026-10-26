@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  TEMPLATE_TAG_PATTERN,
   isExcluded,
   memoryMiB,
   mergeMounts,
+  normalizeTemplateRef,
   parseEnvFile,
   parseMount,
   parsePortList,
   sandboxIdentity,
   sandboxName,
+  templatePrepName,
 } from "../shared/spec";
 
 const GiB = 1024 ** 3;
@@ -52,8 +55,36 @@ describe("memoryMiB", () => {
     expect(memoryMiB(settings, undefined, 8 * GiB)).toBe(2048);
   });
 
-  it("prefers the per-sandbox override", () => {
-    expect(memoryMiB(settings, { memoryGiB: 6, mounts: [], envNames: [] }, 30 * GiB)).toBe(6144);
+  it("prefers the repository's value", () => {
+    expect(memoryMiB(settings, { memoryGiB: 6 }, 30 * GiB)).toBe(6144);
+  });
+
+  it("stays within what sbx accepts: 512 MiB to 75% of the host", () => {
+    expect(memoryMiB(settings, { memoryGiB: 28 }, 30 * GiB)).toBe(23040);
+    expect(memoryMiB({ memoryPercent: 1, memoryFloorGiB: 0 }, undefined, 8 * GiB)).toBe(512);
+  });
+});
+
+describe("templates", () => {
+  it("expands short references the way sbx template ls reports them", () => {
+    expect(normalizeTemplateRef("storefront:v3")).toBe("docker.io/library/storefront:v3");
+    expect(normalizeTemplateRef("storefront")).toBe("docker.io/library/storefront:latest");
+    expect(normalizeTemplateRef("team/tools:1")).toBe("docker.io/team/tools:1");
+    expect(normalizeTemplateRef("ghcr.io/team/tools:1")).toBe("ghcr.io/team/tools:1");
+    expect(normalizeTemplateRef("docker.io/library/x:y")).toBe("docker.io/library/x:y");
+  });
+
+  it("accepts only tags that are safe to hand to sbx", () => {
+    expect(TEMPLATE_TAG_PATTERN.test("storefront:20261026-1530")).toBe(true);
+    expect(TEMPLATE_TAG_PATTERN.test("team/storefront:v1")).toBe(true);
+    expect(TEMPLATE_TAG_PATTERN.test("Storefront")).toBe(false);
+    expect(TEMPLATE_TAG_PATTERN.test("x; rm -rf ~")).toBe(false);
+  });
+
+  it("names the preparation sandbox per repository, apart from working sandboxes", () => {
+    const name = templatePrepName("git:/home/u/repo/.git", "/home/u/repo");
+    expect(name).toMatch(/^paseo-tpl-repo-[0-9a-f]{8}$/);
+    expect(name).not.toBe(sandboxName("git:/home/u/repo/.git", "/home/u/repo"));
   });
 });
 

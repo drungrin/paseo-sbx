@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -81,7 +81,7 @@ describe("buildSpec", () => {
     writeFileSync(paths.defaultEnvFile, "LICENSE_KEY=from-file\n");
     const settings = sandboxSettingsSchema.parse({
       envNames: ["LICENSE_KEY", "FROM_DAEMON", "ABSENT"],
-      overrides: { [`directory:${repo}`]: { envNames: ["EXTRA"], memoryGiB: 6 } },
+      repos: { [`git:${realpathSync(repo)}/.git`]: { envNames: ["EXTRA"], memoryGiB: 6 } },
       isolation: "directory",
     });
     const { spec, missingEnv } = await buildSpec({

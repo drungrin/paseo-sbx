@@ -3,16 +3,54 @@ import { totalmem } from "node:os";
 import {
   describeSandboxRpc,
   ensureProviderRpc,
+  finishTemplateRpc,
   listSandboxesRpc,
+  listTemplatesRpc,
+  prepareTemplateRpc,
+  removeTemplateRpc,
   sandboxActionRpc,
+  saveTemplateRpc,
   shellCommandRpc,
   statusRpc,
 } from "../shared/rpc";
+import type { SandboxSettings } from "../shared/settings";
 import { memoryMiB } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
 import { ensureProvider, providerStatus } from "./provider";
+import { boundAgents, recreateBlockers, recreateSandbox } from "./recreate";
+import { repoDisplayName, repoIdentity } from "./repo";
 import { listSandboxes, prepareSandbox, removeSandbox, sbxHealth, shellCommand, stopSandbox } from "./sbx";
-import { buildSpec, forwardedEnvNames, readEnvFile } from "./spec-builder";
+import { buildSpec, forwardedEnvNames, readEnvFile, templateFor } from "./spec-builder";
+import { readSandboxState, type SandboxState } from "./state";
+import {
+  ensureTemplatePrep,
+  findTemplate,
+  finishTemplatePrep,
+  listTemplates,
+  removeTemplate,
+  saveTemplate,
+  templateUsers,
+  type TemplateInfo,
+} from "./templates";
+
+/** Compares what the repo selects now with what the sandbox was created from, by image ID. */
+function templateStatus(
+  settings: SandboxSettings,
+  repoKey: string,
+  state: SandboxState | null,
+  templates: readonly TemplateInfo[],
+) {
+  const configured = templateFor(settings, repoKey);
+  if (!state) return { configured, sandbox: null, status: "none" as const };
+  if (state.template === undefined) return { configured, sandbox: null, status: "unknown" as const };
+  const sandbox = state.template ?? null;
+  if (configured === null || sandbox === null) {
+    return { configured, sandbox, status: configured === sandbox ? ("match" as const) : ("diverged" as const) };
+  }
+  const configuredId = findTemplate(templates, configured)?.id;
+  if (!configuredId || !state.templateImageId) return { configured, sandbox, status: "unknown" as const };
+  return { configured, sandbox, status: configuredId === state.templateImageId ? ("match" as const) : ("diverged" as const) };
+}
 
 export function registerHandlers(server: PluginServerContext, deps: ServerDeps): void {
   const { paths } = deps;
@@ -35,28 +73,44 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
 
   server.handle(listSandboxesRpc, async () => ({ sandboxes: await listSandboxes(paths) }));
 
-  server.handle(describeSandboxRpc, async ({ workspaceId, directory }) => {
+  server.handle(describeSandboxRpc, async ({ workspaceId, directory }, { paseo }) => {
     const settings = await deps.readSettings();
     const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
-    const sandboxes = await listSandboxes(paths);
+    const [sandboxes, templates, repo] = await Promise.all([
+      listSandboxes(paths),
+      listTemplates(paths),
+      repoIdentity(directory),
+    ]);
     const fileValues = readEnvFile(settings.envFile || paths.defaultEnvFile);
+    const sandbox = sandboxes.find((entry) => entry.name === spec.name);
     return {
       key: spec.key,
       name: spec.name,
-      status: sandboxes.find((sandbox) => sandbox.name === spec.name)?.status ?? null,
+      status: sandbox?.status ?? null,
+      repoKey: spec.repoKey,
+      repoName: repoDisplayName(repo),
       memoryMiB: Number.parseInt(spec.memory, 10),
-      overrideMemoryGiB: settings.overrides[spec.key]?.memoryGiB ?? null,
+      repoMemoryGiB: settings.repos[spec.repoKey]?.memoryGiB ?? null,
       mounts: [spec.workspace, ...spec.mounts],
-      env: forwardedEnvNames(settings, spec.key).map((name) => ({
+      env: forwardedEnvNames(settings, spec.repoKey).map((name) => ({
         name,
         present: fileValues[name] !== undefined || process.env[name] !== undefined,
       })),
+      template: templateStatus(settings, spec.repoKey, readSandboxState(paths, spec.name), templates),
+      agents: await boundAgents(paths, paseo, spec.name),
+      recreateBlockers: sandbox ? await recreateBlockers(paths, paseo, spec.name) : ["the sandbox does not exist yet"],
+      templatePrep:
+        sandboxes.find((entry) => entry.kind === "template-prep" && entry.repoKey === spec.repoKey)?.name ?? null,
+      siblings: sandboxes
+        .filter((entry) => entry.kind === "working" && entry.repoKey === spec.repoKey && entry.name !== spec.name)
+        .map((entry) => entry.name),
     };
   });
 
-  server.handle(sandboxActionRpc, async ({ name, action }) => {
+  server.handle(sandboxActionRpc, async ({ name, action }, { paseo }) => {
     if (action === "stop") await stopSandbox(paths, name);
-    else await removeSandbox(paths, name);
+    else if (action === "remove") await removeSandbox(paths, name);
+    else await recreateSandbox(deps, paseo, name);
     return { ok: true as const };
   });
 
@@ -67,4 +121,24 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     await prepareSandbox(paths, spec);
     return { name: spec.name, ...shellCommand(paths, spec.name) };
   });
+
+  server.handle(listTemplatesRpc, async () => {
+    const settings = await deps.readSettings();
+    const templates = await listTemplates(paths);
+    return { templates: templates.map((template) => ({ ...template, users: templateUsers(settings, template.ref) })) };
+  });
+
+  server.handle(saveTemplateRpc, async ({ name, tag }) => ({ ref: await saveTemplate(paths, name, tag) }));
+
+  server.handle(removeTemplateRpc, async ({ ref }) => {
+    await removeTemplate(paths, await deps.readSettings(), ref);
+    return { ok: true as const };
+  });
+
+  server.handle(prepareTemplateRpc, async ({ directory }) => {
+    const prep = await ensureTemplatePrep(deps, directory);
+    return { name: prep.name, repoKey: prep.repoKey, ...shellCommand(paths, prep.name, { noHistory: true }) };
+  });
+
+  server.handle(finishTemplateRpc, async ({ name, tag }) => ({ ref: await finishTemplatePrep(paths, name, tag) }));
 }

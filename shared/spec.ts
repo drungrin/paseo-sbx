@@ -1,4 +1,4 @@
-import type { IsolationMode, SandboxOverride, SandboxSettings } from "./settings";
+import type { IsolationMode, RepoConfig, SandboxSettings } from "./settings";
 
 export const PROVIDER_ID = "claude-sbx";
 export const SPEC_ENV = "PASEO_SBX_SPEC";
@@ -12,6 +12,10 @@ export interface SandboxSpec {
   version: typeof SPEC_VERSION;
   name: string;
   key: string;
+  /** Repository the sandbox's settings come from (`repoKey()`), recorded at creation. */
+  repoKey: string;
+  /** sbx template reference to create the sandbox from; null uses sbx's image for Claude. */
+  template: string | null;
   /** `XDG_STATE_HOME` of the Paseo-only sbx instance. */
   stateHome: string;
   stateDir: string;
@@ -65,16 +69,38 @@ export function sandboxKey(
     : `directory:${directory}`;
 }
 
-/** sbx names: letters, digits, hyphens and periods, starting alphanumeric. */
-export function sandboxName(key: string, directory: string): string {
+function slug(directory: string): string {
   const base = directory.split("/").filter(Boolean).pop() ?? "root";
-  const slug =
+  return (
     base
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 32) || "root";
-  return `paseo-${slug}-${fnv1a(key)}`;
+      .slice(0, 32) || "root"
+  );
+}
+
+/** sbx names: letters, digits, hyphens and periods, starting alphanumeric. */
+export function sandboxName(key: string, directory: string): string {
+  return `paseo-${slug(directory)}-${fnv1a(key)}`;
+}
+
+/** The sandbox a repo's template is prepared in: one per repo, reused until saved or discarded. */
+export function templatePrepName(repoKey: string, root: string): string {
+  return `paseo-tpl-${slug(root)}-${fnv1a(`template:${repoKey}`)}`;
+}
+
+/** Tags `template save` accepts here: `name`, `name:tag` or `namespace/name:tag`. */
+export const TEMPLATE_TAG_PATTERN = /^[a-z0-9._-]+(\/[a-z0-9._-]+)?(:[A-Za-z0-9._-]+)?$/;
+
+/** The full reference `sbx template ls` reports for a short one (`name:tag` → `docker.io/library/name:tag`). */
+export function normalizeTemplateRef(ref: string): string {
+  const withTag = /:[^/]+$/.test(ref) ? ref : `${ref}:latest`;
+  const parts = withTag.split("/");
+  if (parts.length === 1) return `docker.io/library/${withTag}`;
+  const first = parts[0];
+  const isRegistry = first.includes(".") || first.includes(":") || first === "localhost";
+  return isRegistry ? withTag : `docker.io/${withTag}`;
 }
 
 export function sandboxIdentity(
@@ -95,14 +121,24 @@ function fnv1a(value: string): string {
   return hash.toString(16).padStart(8, "0");
 }
 
+/** sbx accepts 512 MiB up to 75% of host memory. */
+export function memoryLimitsMiB(hostMemoryBytes: number): { min: number; max: number } {
+  return { min: 512, max: Math.max(512, Math.floor((hostMemoryBytes * 0.75) / 1024 / 1024)) };
+}
+
 export function memoryMiB(
   settings: Pick<SandboxSettings, "memoryPercent" | "memoryFloorGiB">,
-  override: SandboxOverride | undefined,
+  repo: Pick<RepoConfig, "memoryGiB"> | undefined,
   hostMemoryBytes: number,
 ): number {
-  if (override?.memoryGiB) return Math.round(override.memoryGiB * 1024);
-  const percent = Math.floor((hostMemoryBytes * settings.memoryPercent) / 100 / 1024 / 1024);
-  return Math.max(percent, Math.round(settings.memoryFloorGiB * 1024));
+  const requested = repo?.memoryGiB
+    ? Math.round(repo.memoryGiB * 1024)
+    : Math.max(
+        Math.floor((hostMemoryBytes * settings.memoryPercent) / 100 / 1024 / 1024),
+        Math.round(settings.memoryFloorGiB * 1024),
+      );
+  const { min, max } = memoryLimitsMiB(hostMemoryBytes);
+  return Math.min(Math.max(requested, min), max);
 }
 
 export interface MountEntry {

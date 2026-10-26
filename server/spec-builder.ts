@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -7,7 +6,6 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
-  realpathSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
@@ -28,7 +26,10 @@ import {
   type SandboxBinding,
   type SandboxSpec,
 } from "../shared/spec";
+import { canonical, git } from "./git";
 import type { PluginPaths } from "./paths";
+import { repoIdentity } from "./repo";
+import { readSandboxState } from "./state";
 
 export interface SpecInput {
   settings: SandboxSettings;
@@ -52,22 +53,6 @@ export interface BuiltSpec {
   rejectedEnv: string[];
 }
 
-function git(cwd: string, args: string[]): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile("git", ["-C", cwd, ...args], { timeout: 10_000, encoding: "utf8" }, (error, stdout) => {
-      resolve(error ? null : stdout.trim() || null);
-    });
-  });
-}
-
-function canonical(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path.replace(/\/+$/, "") || "/";
-  }
-}
-
 /** The workspace root is the git toplevel of the agent cwd, or the canonical cwd outside git. */
 export async function workspaceDirectory(cwd: string): Promise<string> {
   return (await git(cwd, ["rev-parse", "--show-toplevel"])) ?? canonical(cwd);
@@ -86,8 +71,13 @@ export function readEnvFile(path: string): Record<string, string> {
   }
 }
 
-export function forwardedEnvNames(settings: SandboxSettings, key: string): string[] {
-  return [...new Set([...settings.envNames, ...(settings.overrides[key]?.envNames ?? [])])];
+export function forwardedEnvNames(settings: SandboxSettings, repoKey: string): string[] {
+  return [...new Set([...settings.envNames, ...(settings.repos[repoKey]?.envNames ?? [])])];
+}
+
+/** The repo's template, else the global default; null uses sbx's image for Claude. */
+export function templateFor(settings: SandboxSettings, repoKey: string): string | null {
+  return settings.repos[repoKey]?.template || settings.template || null;
 }
 
 /**
@@ -159,10 +149,12 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   const { settings, paths } = input;
   const directory = await workspaceDirectory(input.cwd);
   const identity = input.binding ?? sandboxIdentity(settings.isolation, input.workspaceId, directory);
-  const override = settings.overrides[identity.key];
+  // An existing sandbox keeps the repo it was created for, whatever cwd a session opens with.
+  const repoKey = readSandboxState(paths, identity.name)?.repoKey ?? (await repoIdentity(input.cwd)).key;
+  const repo = settings.repos[repoKey];
 
   const requested: MountEntry[] = [];
-  for (const entry of [...settings.mounts, ...(override?.mounts ?? [])]) {
+  for (const entry of [...settings.mounts, ...(repo?.mounts ?? [])]) {
     const mount = parseMount(entry, home);
     if (mount) requested.push(mount);
   }
@@ -180,7 +172,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   const forwarded: Record<string, string> = {};
   const missingEnv: string[] = [];
   const rejectedEnv: string[] = [];
-  for (const name of forwardedEnvNames(settings, identity.key)) {
+  for (const name of forwardedEnvNames(settings, repoKey)) {
     if (isReservedEnvName(name)) {
       rejectedEnv.push(name);
       continue;
@@ -194,6 +186,8 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     version: SPEC_VERSION,
     name: identity.name,
     key: identity.key,
+    repoKey,
+    template: templateFor(settings, repoKey),
     stateHome: paths.stateHome,
     stateDir: paths.stateDir,
     locksDir: paths.locksDir,
@@ -201,7 +195,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     binDir: paths.binDir,
     workspace: directory,
     mounts,
-    memory: `${memoryMiB(settings, override, input.hostMemoryBytes ?? totalmem())}m`,
+    memory: `${memoryMiB(settings, repo, input.hostMemoryBytes ?? totalmem())}m`,
     cpus: settings.cpus,
     networkAllow: settings.networkAllow,
     forwardPorts: settings.forwardPorts,

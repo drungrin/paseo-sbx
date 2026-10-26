@@ -12,6 +12,7 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import { sandboxSettings, type IsolationMode, type SandboxSettings } from "../shared/settings";
 import { parseList, parsePortList } from "../shared/spec";
+import { useTemplates } from "./queries";
 
 interface Draft {
   routeClaudeAgents: boolean;
@@ -19,6 +20,7 @@ interface Draft {
   memoryPercent: string;
   memoryFloorGiB: string;
   cpus: string;
+  template: string;
   mounts: string;
   claudeShared: string;
   envFile: string;
@@ -35,6 +37,7 @@ function toDraft(values: SandboxSettings): Draft {
     memoryPercent: String(values.memoryPercent),
     memoryFloorGiB: String(values.memoryFloorGiB),
     cpus: String(values.cpus),
+    template: values.template,
     mounts: values.mounts.join("\n"),
     claudeShared: values.claudeShared.join(", "),
     envFile: values.envFile,
@@ -59,6 +62,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     memoryPercent,
     memoryFloorGiB,
     cpus,
+    template: draft.template,
     mounts: parseList(draft.mounts),
     claudeShared: parseList(draft.claudeShared),
     envFile: draft.envFile.trim(),
@@ -91,6 +95,16 @@ type ReadySettings = Extract<ReturnType<typeof useSettings<typeof sandboxSetting
 
 function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: PluginSurfaceProps["theme"] }) {
   const [draft, setDraft] = useState(() => toDraft(settings.values));
+  const templates = useTemplates();
+  const templateOptions = [
+    { label: "sbx image for Claude", value: "" },
+    ...(templates.data?.templates ?? [])
+      .filter((template) => !template.base)
+      .map((template) => ({ label: template.ref.replace(/^docker\.io\/library\//, ""), value: template.ref })),
+  ];
+  if (draft.template && !templateOptions.some((option) => option.value === draft.template)) {
+    templateOptions.push({ label: `${draft.template} (missing)`, value: draft.template });
+  }
   const [error, setError] = useState<string | null>(null);
   const update = <Key extends keyof Draft>(key: Key) => (value: Draft[Key]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -148,6 +162,13 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
 
       <SettingsSection title="Environment">
         <SettingsCard>
+          <SettingsSelect
+            label="Default template"
+            hint="New sandboxes start from it unless their repository picks another in its Sandbox panel."
+            value={draft.template}
+            options={templateOptions}
+            onValueChange={update("template")}
+          />
           <SettingsInput
             label="Extra mounts"
             hint="One per line, absolute or ~/ paths. Append :ro for read-only. Toolchains and shared tool state go here."

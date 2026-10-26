@@ -17,18 +17,20 @@ Open **Sandboxes** in the sidebar and press **Configure** to register the provid
 ## Settings
 
 - **One sandbox per**: workspace (default) or directory. Workspaces that share a directory get separate VMs in workspace mode.
-- **Memory**: a percentage of host RAM per sandbox (10% by default) with a minimum, plus a per-workspace override in the workspace's **Sandbox** panel.
+- **Templates**: a default template for new sandboxes, and one per repository in the workspace's **Sandbox** panel. **Prepare template** opens a shell in a clean sandbox to install your tools, then saves it.
+- **Memory**: a percentage of host RAM per sandbox (10% by default) with a minimum, plus a per-repository value in the workspace's **Sandbox** panel.
 - **Extra mounts**: toolchains and shared tool state your agents need, such as a version manager's install directory (`:ro` for read-only).
 - **Forwarded variables**: values your agents get from your shell profile on the host, read from a dotenv file (`~/.config/paseo-sbx/env` by default). Only Claude and Paseo variables reach the sandbox automatically; tokens such as `GH_TOKEN` must be listed here.
 - **Allowed destinations** and **Extra host ports**: the sandbox network policy and additional host loopback ports to relay.
 - **Excluded paths**: workspaces that keep running Claude on the host when routing is on.
 
-The workspace **Sandbox** panel shows the sandbox, its mounts and variables, and opens a terminal inside it for manual checks.
+The workspace **Sandbox** panel shows the sandbox, the agents keeping it running, its template, mounts and variables, and opens a terminal inside it for manual checks. Settings for a repository apply to every worktree of it.
 
 ## Limits
 
 - Terminals, workspace scripts and services from `paseo.json` still run on the host.
-- Mounts, memory and CPUs are fixed when a sandbox is created; remove it from the panel to recreate it. Existing agents keep the sandbox they started in when you change the isolation mode.
+- Template, mounts, memory and CPUs are fixed when a sandbox is created. **Recreate** applies new ones once every agent of the sandbox is archived; it discards what runs inside the VM. Existing agents keep the sandbox they started in when you change the isolation mode.
+- Templates do not include the images of the VM's own Docker: each new sandbox pulls them again.
 - Stopping a sandbox is abrupt for what runs inside it: databases go through crash recovery on the next start.
 - Each open workspace keeps a VM running, about 1 GB of memory at idle plus its workload, and each VM has its own image cache on disk.
 - Hooks or plugins in your Claude settings that call host-only binaries fail inside the sandbox.

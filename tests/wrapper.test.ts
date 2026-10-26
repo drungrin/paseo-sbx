@@ -5,60 +5,8 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
 import { SUPERVISOR_SOURCE, WRAPPER_SOURCE, launcherSource } from "../server/wrapper-source";
-
-// A fake sbx that keeps sandboxes in a JSON file, logs every call with the names in its
-// environment, and runs `exec` commands locally with a VM-like environment: PATH plus the
-// `--env-file` values and the `-e NAME` variables only.
-const FAKE_SBX = `#!/usr/bin/env node
-const fs = require('node:fs');
-const cp = require('node:child_process');
-const args = process.argv.slice(2);
-const stateFile = process.env.FAKE_SBX_STATE;
-const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { sandboxes: [] };
-fs.appendFileSync(process.env.FAKE_SBX_LOG, JSON.stringify({ args, stateHome: process.env.XDG_STATE_HOME, envNames: Object.keys(process.env) }) + '\\n');
-const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
-if (args[0] === 'ls') {
-  if (process.env.FAKE_SBX_LS_ERROR) { process.stderr.write(process.env.FAKE_SBX_LS_ERROR); process.exit(1); }
-  process.stdout.write(JSON.stringify(state.sandboxes.map((name) => ({ name, status: 'running' }))));
-} else if (args[0] === 'create') {
-  if (process.env.FAKE_SBX_FAIL_CREATE) { process.stderr.write('create refused'); process.exit(3); }
-  state.sandboxes.push(args[args.indexOf('--name') + 1]);
-  save();
-} else if (args[0] === 'policy') {
-  // accepted
-} else if (args[0] === 'exec') {
-  let i = 1;
-  let cwd = process.cwd();
-  const env = { PATH: process.env.PATH };
-  for (; i < args.length; i++) {
-    if (args[i] === '-i') continue;
-    if (args[i] === '-w') { cwd = args[++i]; continue; }
-    if (args[i] === '-e') { const name = args[++i]; env[name] = process.env[name] === undefined ? '' : process.env[name]; continue; }
-    if (args[i] === '--env-file') {
-      for (const line of fs.readFileSync(args[++i], 'utf8').split('\\n')) {
-        const eq = line.indexOf('=');
-        if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
-      }
-      continue;
-    }
-    break;
-  }
-  if (!state.sandboxes.includes(args[i])) { process.stderr.write('no such sandbox'); process.exit(1); }
-  const guest = cp.spawn(args[i + 1], args.slice(i + 2), { cwd, env, stdio: ['pipe', 'inherit', 'inherit'], detached: true });
-  if (process.env.FAKE_SBX_DETACH) {
-    // Like a client that exits on stdin EOF while the guest keeps running.
-    guest.stdin.end();
-    guest.unref();
-    process.exit(0);
-  }
-  // The guest's stdin is a pipe from the client: it reaches EOF when the client goes away.
-  process.stdin.pipe(guest.stdin);
-  guest.stdin.on('error', () => {});
-  guest.on('exit', (code) => process.exit(code === null ? 1 : code));
-} else {
-  process.exit(2);
-}
-`;
+import { processStart } from "../server/state";
+import { FAKE_SBX } from "./fake-sbx";
 
 // A fake claude that reports what it received and echoes the first stdin line. With
 // CLAUDE_FAKE_BUSY it behaves like Claude in the middle of a tool call: stdin closing does not
@@ -110,6 +58,8 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
     version: 2,
     name: "paseo-workspace-0000abcd",
     key: "workspace:wks_1",
+    repoKey: `dir:${workspace}`,
+    template: null,
     stateHome: join(state, "sbx"),
     stateDir: join(state, "sandboxes"),
     locksDir: join(state, "locks"),
@@ -467,6 +417,92 @@ describe("wrapper hardening", () => {
     chmodSync(launcher, 0o755);
     const result = spawnSync(launcher, ["a b", "c'd", ""], { encoding: "utf8" });
     expect(JSON.parse(result.stdout)).toEqual({ args: ["a b", "c'd", ""], electron: "1" });
+  });
+});
+
+describe("wrapper and the plugin's sandbox operations", () => {
+  const appTemplate = { id: "abc123def456", repository: "docker.io/library/app", tag: "v2" };
+
+  function setFakeState(state: object) {
+    writeFileSync(join(root, "sbx-state.json"), JSON.stringify(state));
+  }
+
+  it("creates the sandbox from the repository's template and records what it used", () => {
+    setFakeState({ templates: [appTemplate] });
+    const sandbox = spec({ template: "app:v2" });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(0);
+    const create = result.calls.find((call) => call.args[0] === "create");
+    expect(create?.args).toEqual(expect.arrayContaining(["-t", "app:v2", "--pull", "never"]));
+    const state = JSON.parse(readFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), "utf8"));
+    expect(state).toMatchObject({
+      repoKey: sandbox.repoKey,
+      template: "app:v2",
+      templateImageId: appTemplate.id,
+      claudeConfigDir: sandbox.claudeConfigDir,
+    });
+  });
+
+  it("refuses a template the Paseo instance does not have, before creating anything", () => {
+    setFakeState({ templates: [appTemplate] });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(spec({ template: "app:v9" })) } });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("template app:v9 is not in the Paseo sbx instance");
+    expect(result.calls.some((call) => call.args[0] === "create")).toBe(false);
+  });
+
+  it("refuses to launch while a live recreation holds the sandbox", () => {
+    const sandbox = spec();
+    mkdirSync(sandbox.locksDir, { recursive: true });
+    const marker = { pid: process.pid, start: processStart(process.pid), token: "server-token", phase: "creating" };
+    writeFileSync(join(sandbox.locksDir, `${sandbox.name}.recreating`), JSON.stringify(marker));
+    const result = run([], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: "{}\n" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("is being recreated");
+    expect(result.calls).toEqual([]);
+  });
+
+  it("drops the marker of a recreation whose owner died and creates the sandbox", () => {
+    const sandbox = spec();
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+    mkdirSync(sandbox.locksDir, { recursive: true });
+    const markerFile = join(sandbox.locksDir, `${sandbox.name}.recreating`);
+    writeFileSync(markerFile, JSON.stringify({ pid: Number(dead.stdout), start: "1", token: "t", phase: "removing" }));
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(0);
+    expect(existsSync(markerFile)).toBe(false);
+    expect(result.calls.some((call) => call.args[0] === "create")).toBe(true);
+  });
+
+  it("works inside a lock the server holds when given its token", () => {
+    const sandbox = spec();
+    const lockDir = join(sandbox.locksDir, sandbox.name);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "owner"), `${process.pid} server-token`);
+    writeFileSync(
+      join(sandbox.locksDir, `${sandbox.name}.recreating`),
+      JSON.stringify({ pid: process.pid, start: processStart(process.pid), token: "server-token", phase: "creating" }),
+    );
+    const started = Date.now();
+    const result = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(sandbox), PASEO_SBX_LOCK_TOKEN: "server-token" },
+    });
+    expect(result.status).toBe(0);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // The holder releases its own lock.
+    expect(existsSync(lockDir)).toBe(true);
+  });
+
+  it("leases the sandbox for as long as a session runs", async () => {
+    const session = startSession({ PASEO_AGENT_ID: "agent-7" });
+    await waitForGuest();
+    const leasesDir = join(spec().locksDir, `${spec().name}.leases`);
+    const lease = JSON.parse(readFileSync(join(leasesDir, String(session.pid)), "utf8"));
+    expect(lease).toMatchObject({ pid: session.pid, agentId: "agent-7" });
+    expect(lease.start).toBe(processStart(session.pid ?? 0));
+    session.kill("SIGTERM");
+    await exited(session);
+    expect(readdirSync(leasesDir)).toEqual([]);
   });
 });
 

@@ -1,7 +1,16 @@
-import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import { useSettings, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Text, View } from "react-native";
-import type { SandboxSummary } from "../shared/rpc";
-import { useEnsureProvider, useSandboxAction, useSandboxes, useStatus } from "./queries";
+import type { SandboxSummary, TemplateSummary } from "../shared/rpc";
+import { sandboxSettings } from "../shared/settings";
+import {
+  useEnsureProvider,
+  useInvalidateAll,
+  useRemoveTemplate,
+  useSandboxAction,
+  useSandboxes,
+  useStatus,
+  useTemplates,
+} from "./queries";
 import {
   Button,
   Card,
@@ -86,7 +95,107 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
           <SandboxCard key={sandbox.name} styles={styles} sandbox={sandbox} />
         ))}
       </Section>
+
+      <TemplatesSection styles={styles} />
+      <LegacyOverridesSection styles={styles} />
     </Screen>
+  );
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return "-";
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+function TemplatesSection({ styles }: { styles: Styles }) {
+  const templates = useTemplates();
+  const remove = useRemoveTemplate();
+  const custom = (templates.data?.templates ?? []).filter((template) => !template.base);
+  return (
+    <Section styles={styles} title="Templates">
+      {templates.error ? <Text style={styles.error}>{errorMessage(templates.error)}</Text> : null}
+      {templates.data && custom.length === 0 ? (
+        <Text style={styles.muted}>No templates yet. Prepare one from a workspace's Sandbox panel.</Text>
+      ) : null}
+      {custom.map((template) => (
+        <TemplateCard key={template.ref} styles={styles} template={template} onRemove={() => remove.mutate(template.ref)} removing={remove.isPending} />
+      ))}
+      {remove.error ? <Text style={styles.error}>{errorMessage(remove.error)}</Text> : null}
+    </Section>
+  );
+}
+
+function TemplateCard({
+  styles,
+  template,
+  onRemove,
+  removing,
+}: {
+  styles: Styles;
+  template: TemplateSummary;
+  onRemove(): void;
+  removing: boolean;
+}) {
+  return (
+    <Card styles={styles}>
+      <Row styles={styles} label={template.ref.replace(/^docker\.io\/library\//, "")} first>
+        {formatBytes(template.sizeBytes)}
+      </Row>
+      <Row styles={styles} label="Used by">
+        {template.users.length === 0 ? "-" : template.users.map((user) => (user === "default" ? "default" : user.replace(/^(git|dir):/, ""))).join(", ")}
+      </Row>
+      <View style={[styles.row, styles.actions]}>
+        <ConfirmButton
+          styles={styles}
+          label="Remove"
+          confirmLabel="Confirm remove"
+          disabled={removing || template.users.length > 0}
+          onConfirm={onRemove}
+        />
+      </View>
+    </Card>
+  );
+}
+
+function LegacyOverridesSection({ styles }: { styles: Styles }) {
+  const settings = useSettings(sandboxSettings);
+  const invalidate = useInvalidateAll();
+  if (settings.status !== "ready") return null;
+  const entries = Object.entries(settings.values.legacyOverrides);
+  if (entries.length === 0) return null;
+  async function drop(key: string) {
+    if (settings.status !== "ready") return;
+    const legacyOverrides = { ...settings.values.legacyOverrides };
+    delete legacyOverrides[key];
+    await settings.save({ ...settings.values, legacyOverrides }, settings.revision);
+    invalidate();
+  }
+  return (
+    <Section styles={styles} title="Settings to reassign">
+      <Text style={styles.muted}>
+        Per-sandbox settings from an older plugin version that could not move to a single repository. Set them again in the
+        repository's Sandbox panel, then remove them here.
+      </Text>
+      {entries.map(([key, override]) => (
+        <Card key={key} styles={styles}>
+          <Row styles={styles} label={key} first>
+            {override.reason === "conflict" ? "conflicts with another worktree" : override.reason === "workspace" ? "per workspace" : "unresolved"}
+          </Row>
+          <Row styles={styles} label="Values">
+            {[
+              override.memoryGiB ? `${override.memoryGiB} GiB` : null,
+              override.mounts.length > 0 ? `mounts: ${override.mounts.join(", ")}` : null,
+              override.envNames.length > 0 ? `variables: ${override.envNames.join(", ")}` : null,
+            ]
+              .filter(Boolean)
+              .join("; ") || "-"}
+          </Row>
+          <View style={[styles.row, styles.actions]}>
+            <ConfirmButton styles={styles} label="Remove" confirmLabel="Confirm remove" onConfirm={() => void drop(key)} />
+          </View>
+        </Card>
+      ))}
+    </Section>
   );
 }
 
@@ -95,8 +204,13 @@ function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSumm
   return (
     <Card styles={styles}>
       <Row styles={styles} label={sandbox.name} first>
-        {sandbox.status}
+        {sandbox.kind === "template-prep" ? `${sandbox.status} · template preparation` : sandbox.status}
       </Row>
+      {sandbox.template ? (
+        <Row styles={styles} label="Template">
+          <Text style={styles.mono}>{sandbox.template}</Text>
+        </Row>
+      ) : null}
       {sandbox.memory ? (
         <Row styles={styles} label="Memory">
           {sandbox.memory}

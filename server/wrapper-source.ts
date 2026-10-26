@@ -146,21 +146,51 @@ function processAlive(pid) {
   }
 }
 
-// mkdir lock with an owner file: a lock whose owner died is taken over at once, and errors
-// thrown inside fn release it on the way out.
+// Linux start time of a process (field 22 of /proc/<pid>/stat), or '' where unavailable.
+function processStart(pid) {
+  try {
+    return fs.readFileSync('/proc/' + pid + '/stat', 'utf8').split(')').pop().trim().split(/\s+/)[19] || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+function sameProcessAlive(ref) {
+  if (!processAlive(ref.pid)) return false;
+  const start = processStart(ref.pid);
+  return !ref.start || !start || start === ref.start;
+}
+
+function readLockOwner(lockDir) {
+  const parts = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8').split(' ');
+  return { pid: Number(parts[0]), token: parts[1] || '' };
+}
+
+// mkdir lock with an owner file ('<pid> <token>'): a lock whose owner died is taken over at
+// once, and errors thrown inside fn release it on the way out. The plugin server holds this lock
+// while it recreates a sandbox and runs the ensure step with its token in PASEO_SBX_LOCK_TOKEN:
+// that run works inside the held lock instead of waiting for it.
 function withLock(lockDir, fn) {
+  const token = process.env.PASEO_SBX_LOCK_TOKEN;
+  if (token) {
+    try {
+      if (readLockOwner(lockDir).token === token) return fn();
+    } catch (error) {
+      // not held: take it normally
+    }
+  }
   const owner = path.join(lockDir, 'owner');
   const deadline = Date.now() + 180000;
   for (;;) {
     try {
       fs.mkdirSync(lockDir);
-      fs.writeFileSync(owner, String(process.pid));
+      fs.writeFileSync(owner, process.pid + ' ');
       break;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       let ownerPid = 0;
       try {
-        ownerPid = Number(fs.readFileSync(owner, 'utf8'));
+        ownerPid = readLockOwner(lockDir).pid;
       } catch (readError) {
         // owner not written yet, or released between the attempts
       }
@@ -214,10 +244,63 @@ function claudeMount(claude) {
   return (SYSTEM_DIRS.has(dir) ? claude : dir) + ':ro';
 }
 
+// The plugin server writes locks/<name>.recreating while it removes and recreates a sandbox.
+// A marker whose owner died belongs to an interrupted recreation: drop it and carry on, since
+// the ensure step creates the sandbox when it is missing.
+function checkRecreating(spec) {
+  const file = path.join(spec.locksDir, spec.name + '.recreating');
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    return;
+  }
+  if (process.env.PASEO_SBX_LOCK_TOKEN && marker.token === process.env.PASEO_SBX_LOCK_TOKEN) return;
+  if (sameProcessAlive(marker)) {
+    throw new WrapperError('sandbox ' + spec.name + ' is being recreated; start the agent again when it finishes');
+  }
+  fs.rmSync(file, { force: true });
+  log('removed the marker of an interrupted recreation of ' + spec.name);
+}
+
+// A running session in locks/<name>.leases/<pid>: the plugin refuses to recreate a sandbox
+// while one is alive.
+function writeLease(spec) {
+  const dir = path.join(spec.locksDir, spec.name + '.leases');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, String(process.pid));
+  fs.writeFileSync(file, JSON.stringify({
+    pid: process.pid,
+    start: processStart(process.pid),
+    agentId: process.env.PASEO_AGENT_ID || null,
+  }));
+  process.on('exit', function () { fs.rmSync(file, { force: true }); });
+}
+
+// Same normalization as normalizeTemplateRef in shared/spec.ts.
+function normalizeTemplateRef(ref) {
+  const withTag = /:[^/]+$/.test(ref) ? ref : ref + ':latest';
+  const parts = withTag.split('/');
+  if (parts.length === 1) return 'docker.io/library/' + withTag;
+  const first = parts[0];
+  return first.includes('.') || first.includes(':') || first === 'localhost' ? withTag : 'docker.io/' + withTag;
+}
+
+function templateImageId(spec) {
+  const wanted = normalizeTemplateRef(spec.template);
+  const list = JSON.parse(sbxOk(spec, ['template', 'ls', '--json'], 'sbx template ls') || '[]');
+  const match = list.find(function (entry) {
+    return entry.repository + ':' + entry.tag === wanted || entry.id === spec.template;
+  });
+  if (!match) throw new WrapperError('template ' + spec.template + ' is not in the Paseo sbx instance (sbx template ls)');
+  return match.id;
+}
+
 function ensureSandbox(spec, claude) {
   fs.mkdirSync(spec.locksDir, { recursive: true });
   fs.mkdirSync(spec.claudeConfigDir, { recursive: true });
   withLock(path.join(spec.locksDir, spec.name), function () {
+    checkRecreating(spec);
     const list = JSON.parse(sbxOk(spec, ['ls', '--json'], 'sbx ls') || '[]');
     if (list.some(function (sandbox) { return sandbox.name === spec.name; })) return;
     const seen = new Set([spec.workspace]);
@@ -233,11 +316,22 @@ function ensureSandbox(spec, claude) {
       seen.add(target);
       mounts.push(entry);
     }
+    const imageId = spec.template ? templateImageId(spec) : null;
     const createArgs = ['create', '--name', spec.name, '--memory', spec.memory, '--no-progress'];
     if (spec.cpus > 0) createArgs.push('--cpus', String(spec.cpus));
+    if (spec.template) createArgs.push('-t', spec.template, '--pull', 'never');
     sbxOk(spec, createArgs.concat(['claude'], mounts), 'sbx create ' + spec.name);
-    writeState(spec, { key: spec.key, workspace: spec.workspace, policies: [] });
-    log('created sandbox ' + spec.name + ' (' + spec.memory + ')');
+    writeState(spec, {
+      key: spec.key,
+      repoKey: spec.repoKey,
+      workspace: spec.workspace,
+      claudeConfigDir: spec.claudeConfigDir,
+      template: spec.template,
+      templateImageId: imageId,
+      memory: spec.memory,
+      policies: [],
+    });
+    log('created sandbox ' + spec.name + ' (' + spec.memory + (spec.template ? ', template ' + spec.template : '') + ')');
   });
 }
 
@@ -426,6 +520,8 @@ function main() {
     );
   }
   removeOrphanEnvFiles(spec);
+  checkRecreating(spec);
+  if (args[0] !== ENSURE_FLAG) writeLease(spec);
   ensureSandbox(spec, claude);
   const guest = guestEnv(spec);
   const ports = detectPorts(spec, guest);

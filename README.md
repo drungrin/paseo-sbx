@@ -34,7 +34,8 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 
 - `sbx/`: the Paseo-only `sbx` instance (`XDG_STATE_HOME` for `sbx`). Inspect it with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx ls`.
 - `claude/<sandbox>/`: per-sandbox Claude config directories. Paseo reads transcripts here for history and rewind.
-- `sandboxes/<sandbox>.json`: network rules applied to each sandbox. Removing a rule from the settings revokes it on the next launch.
+- `sandboxes/<sandbox>.json`: how each sandbox was created (repository, template and its image ID, memory) and the network rules applied to it. Removing a rule from the settings revokes it on the next launch.
+- `locks/`: per-sandbox locks, the leases of running sessions, and the marker of a recreation in progress.
 - `run/`: per-session env files, private to your user and never mounted.
 - `agents/<agent>.json`: the sandbox each agent first opened in. Resume, refresh and history reuse it, so changing the isolation mode does not move existing agents or their transcripts.
 
@@ -44,6 +45,9 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - **Teardown inside the guest.** The `sbx exec` client can exit while Claude is still inside a tool call, and the daemon tree-kills the wrapper and anything it spawns during shutdown. The guest supervisor stops Claude's process tree once its stdin reaches EOF, which happens however the session ends on the host.
 - **Paseo-only `sbx`.** Paseo's sandboxes live in their own `sbx` instance, started by the daemon on demand. Restarting Paseo stops them; your own sandboxes are unaffected.
 - **Secrets stay out of sbx processes.** Forwarded values reach the guest through a 0600 file in `run/`, passed with `sbx exec --env-file` and deleted when the session ends (files of sessions that were killed go at the next launch). No sbx client runs with them in its environment, so the sandbox daemon never inherits them, whichever call starts it. A value with a newline cannot go in that file and falls back to the client environment. Variables the `sbx` client reads itself (`PATH`, `HOME`, `XDG_*`, `SBX_*`, `DOCKER_*`, ...) are never forwarded.
+- **Settings per repository.** Templates, memory, mounts and variables are keyed by the repository's git common dir, so every worktree of a repo shares them while each gets its own sandbox. A sandbox keeps the repository it was created for. Version 1 per-sandbox overrides that could not move to one repository are listed in the Sandboxes screen to reassign.
+- **Templates.** A template is a saved sandbox filesystem in the Paseo instance (`sbx template save`, run on a pseudo-terminal because sbx 0.49 refuses to save without one). It does not include the images of the VM's own Docker. Prepare one in a clean sandbox, without your variables or credentials: saving a working sandbox captures `/home/agent`, login tokens included.
+- **Recreate needs archived agents.** The plugin API can neither close nor reopen an agent's runtime, and a resident agent can start a turn at any time, so the plugin recreates a sandbox only when every agent bound to it is archived and no session runs. The server holds the sandbox lock for the whole operation and marks it so new launches fail fast.
 - **Invalid settings fail instead of defaulting.** Falling back to defaults could silently turn routing off or reopen the network policy. The plugin keeps the last valid settings it read; without any, `claude-sbx` sessions and routed agent creation fail with a message pointing to the settings screen.
 
 ### What reaches the guest environment

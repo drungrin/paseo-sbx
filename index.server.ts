@@ -3,11 +3,16 @@ import { sandboxSettings, type SandboxSettings } from "./shared/settings";
 import { registerHandlers } from "./server/handlers";
 import { registerHooks } from "./server/hooks";
 import { installBinFiles, pluginPaths } from "./server/paths";
+import { migrateSettings } from "./server/settings-migration";
+import { reconcileRecreatingMarkers } from "./server/state";
 
 export default function contribute(server: PluginServerContext) {
   const paths = pluginPaths();
   installBinFiles(paths);
-  const settings = server.registerSettings(sandboxSettings);
+  for (const name of reconcileRecreatingMarkers(paths)) {
+    console.warn(`[paseo-sbx] ${name}: a recreation was interrupted; its next launch creates it again`);
+  }
+  const settings = server.registerSettings({ ...sandboxSettings, migrate: migrateSettings });
 
   // Invalid stored settings never fall back to defaults: that could silently turn routing off
   // or reopen the network policy. Keep the last valid values for this process, else fail.

@@ -3,7 +3,9 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
 import type { SandboxSummary } from "../shared/rpc";
+import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
+import { readSandboxState, removeSandboxState } from "./state";
 
 export interface SbxResult {
   code: number;
@@ -48,7 +50,7 @@ export class SbxError extends Error {
   }
 }
 
-async function runSbxOk(paths: PluginPaths, args: string[], operation: string): Promise<string> {
+export async function runSbxOk(paths: PluginPaths, args: string[], operation: string): Promise<string> {
   const result = await runSbx(paths, args);
   if (result.code !== 0) throw new SbxError(operation, result);
   return result.stdout;
@@ -92,12 +94,18 @@ interface SbxListEntry {
 export async function listSandboxes(paths: PluginPaths): Promise<SandboxSummary[]> {
   const stdout = await runSbxOk(paths, ["ls", "--json"], "sbx ls");
   const entries = JSON.parse(stdout || "[]") as SbxListEntry[];
-  return entries.map((entry) => ({
-    name: entry.name,
-    status: entry.status ?? "unknown",
-    workspaces: entry.workspaces ?? [],
-    memory: entry.memory ?? null,
-  }));
+  return entries.map((entry) => {
+    const state = readSandboxState(paths, entry.name);
+    return {
+      name: entry.name,
+      status: entry.status ?? "unknown",
+      workspaces: entry.workspaces ?? [],
+      memory: entry.memory ?? null,
+      kind: state?.kind === "template-prep" ? ("template-prep" as const) : ("working" as const),
+      repoKey: state?.repoKey ?? null,
+      template: state?.template ?? null,
+    };
+  });
 }
 
 /** RPC input names must be ones this plugin generates; they also become file names. */
@@ -107,22 +115,33 @@ export function assertSandboxName(name: string): void {
 
 export async function stopSandbox(paths: PluginPaths, name: string): Promise<void> {
   assertSandboxName(name);
-  await runSbxOk(paths, ["stop", name], `sbx stop ${name}`);
+  await withSandboxLock(paths, name, newLockToken(), () => runSbxOk(paths, ["stop", name], `sbx stop ${name}`));
 }
 
-/** Removes the sandbox and the wrapper's record of the policies applied to it. */
+/** Removes the sandbox with its state and leases; the Claude config dir and transcripts stay. */
 export async function removeSandbox(paths: PluginPaths, name: string): Promise<void> {
   assertSandboxName(name);
-  await runSbxOk(paths, ["rm", "-f", name], `sbx rm ${name}`);
-  rmSync(join(paths.stateDir, `${name}.json`), { force: true });
+  await withSandboxLock(paths, name, newLockToken(), () => removeSandboxLocked(paths, name));
 }
 
-/** Creates the sandbox and applies its policy through the wrapper's ensure mode. */
-export function prepareSandbox(paths: PluginPaths, spec: SandboxSpec): Promise<void> {
+/** `removeSandbox` for callers that already hold the sandbox lock. */
+export async function removeSandboxLocked(paths: PluginPaths, name: string): Promise<void> {
+  await runSbxOk(paths, ["rm", "-f", name], `sbx rm ${name}`);
+  removeSandboxState(paths, name);
+  rmSync(join(paths.locksDir, `${name}.leases`), { recursive: true, force: true });
+}
+
+/**
+ * Creates the sandbox and applies its policy through the wrapper's ensure mode. A caller holding
+ * the sandbox lock passes its token so the wrapper runs inside that lock.
+ */
+export function prepareSandbox(paths: PluginPaths, spec: SandboxSpec, lockToken?: string): Promise<void> {
   return new Promise((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, [SPEC_ENV]: JSON.stringify(spec) };
+    if (lockToken) env.PASEO_SBX_LOCK_TOKEN = lockToken;
     const child = spawn(paths.launcher, ["--paseo-sbx-ensure"], {
       cwd: spec.workspace,
-      env: { ...process.env, [SPEC_ENV]: JSON.stringify(spec) },
+      env,
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
@@ -137,9 +156,15 @@ export function prepareSandbox(paths: PluginPaths, spec: SandboxSpec): Promise<v
   });
 }
 
-export function shellCommand(paths: PluginPaths, name: string): { command: string; args: string[] } {
+/** A login shell in the sandbox; `noHistory` keeps it from writing a shell history to save in a template. */
+export function shellCommand(
+  paths: PluginPaths,
+  name: string,
+  options: { noHistory?: boolean } = {},
+): { command: string; args: string[] } {
+  const historyArgs = options.noHistory ? ["-e", "HISTFILE=/dev/null"] : [];
   return {
     command: "env",
-    args: [`XDG_STATE_HOME=${paths.stateHome}`, "sbx", "exec", "-it", name, "bash", "-l"],
+    args: [`XDG_STATE_HOME=${paths.stateHome}`, "sbx", "exec", "-it", ...historyArgs, name, "bash", "-l"],
   };
 }
