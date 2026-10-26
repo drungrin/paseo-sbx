@@ -65,7 +65,8 @@ if (args[0] === 'ls') {
   const [repo, version] = tag.includes(':') ? tag.split(':') : [tag, 'latest'];
   state.templates.push({ id: Math.random().toString(16).slice(2, 14), repository: 'docker.io/library/' + repo, tag: version });
   save();
-  process.stdout.write('\\x1b[1A  Saved template docker.io/library/' + repo + ':' + version + '\\r\\n');
+  // Like sbx, on stderr.
+  process.stderr.write('\\x1b[1A  Saved template docker.io/library/' + repo + ':' + version + '\\r\\n');
 } else if (args[0] === 'template' && args[1] === 'rm') {
   const ref = args[args.length - 1];
   state.templates = state.templates.filter((entry) => entry.repository + ':' + entry.tag !== ref);

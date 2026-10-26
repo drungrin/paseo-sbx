@@ -5,7 +5,7 @@ import type { ServerDeps } from "./hooks";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
-import { assertSandboxName, listSandboxes, removeSandbox, runSbxOk, stopSandboxLocked } from "./sbx";
+import { SbxError, assertSandboxName, listSandboxes, removeSandbox, runSbx, runSbxOk, stopSandboxLocked } from "./sbx";
 import { templateFor } from "./spec-builder";
 import { liveLeases, writeSandboxState } from "./state";
 
@@ -71,9 +71,12 @@ export async function saveTemplate(paths: PluginPaths, name: string, tag: string
       );
     }
     await stopSandboxLocked(paths, name);
-    const stdout = await runSbxOk(paths, ["template", "save", name, tag], "sbx template save", 600_000);
-    const saved = /Saved template (\S+)/.exec(stdout.replace(ANSI, ""))?.[1];
-    if (!saved) throw new Error(`sbx template save did not report the template: ${stdout.trim().slice(-400)}`);
+    const result = await runSbx(paths, ["template", "save", name, tag], 600_000);
+    if (result.code !== 0) throw new SbxError("sbx template save", result);
+    // sbx reports progress and the saved reference on stderr.
+    const output = `${result.stdout}\n${result.stderr}`.replace(ANSI, "");
+    const saved = /Saved template (\S+)/.exec(output)?.[1];
+    if (!saved) throw new Error(`sbx template save did not report the template: ${output.trim().slice(-400)}`);
     return saved;
   });
 }
