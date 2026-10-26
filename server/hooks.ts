@@ -18,8 +18,13 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
   // here; the wrapper refuses to run a session without one. A throw fails the session.
   server.before("agent.session_open", async ({ request }) => {
     if (request.provider !== PROVIDER_ID) return request;
-    const settings = await deps.readSettings();
     const binding = readBinding(deps.paths, request.agentId);
+    // Reading an archived agent's history runs nothing: point Paseo at the transcripts and
+    // leave the sandbox, the binding and the config dir alone.
+    if (request.purpose === "history") {
+      return binding ? { ...request, env: { ...request.env, CLAUDE_CONFIG_DIR: binding.claudeConfigDir } } : request;
+    }
+    const settings = await deps.readSettings();
     const { spec, missingEnv, rejectedEnv } = await buildSpec({
       settings,
       workspaceId: request.workspaceId,

@@ -40,6 +40,8 @@ export interface SpecInput {
   env?: NodeJS.ProcessEnv;
   home?: string;
   hostMemoryBytes?: number;
+  /** Creates and links the sandbox's Claude config dir. Off for read-only callers. */
+  prepare?: boolean;
 }
 
 export interface BuiltSpec {
@@ -172,7 +174,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     .map(formatMount);
 
   const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
-  prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared);
+  if (input.prepare !== false) prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared);
 
   const fileValues = readEnvFile(settings.envFile || paths.defaultEnvFile);
   const forwarded: Record<string, string> = {};
@@ -195,6 +197,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     stateHome: paths.stateHome,
     stateDir: paths.stateDir,
     locksDir: paths.locksDir,
+    runDir: paths.runDir,
     binDir: paths.binDir,
     workspace: directory,
     mounts,

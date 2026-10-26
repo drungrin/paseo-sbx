@@ -1,22 +1,24 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
 import { SUPERVISOR_SOURCE, WRAPPER_SOURCE, launcherSource } from "../server/wrapper-source";
 
-// A fake sbx that keeps sandboxes in a JSON file, logs every call, and runs `exec` commands
-// locally with a VM-like environment: PATH plus the `-e NAME` variables only.
+// A fake sbx that keeps sandboxes in a JSON file, logs every call with the names in its
+// environment, and runs `exec` commands locally with a VM-like environment: PATH plus the
+// `--env-file` values and the `-e NAME` variables only.
 const FAKE_SBX = `#!/usr/bin/env node
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const args = process.argv.slice(2);
 const stateFile = process.env.FAKE_SBX_STATE;
 const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { sandboxes: [] };
-fs.appendFileSync(process.env.FAKE_SBX_LOG, JSON.stringify({ args, stateHome: process.env.XDG_STATE_HOME }) + '\\n');
+fs.appendFileSync(process.env.FAKE_SBX_LOG, JSON.stringify({ args, stateHome: process.env.XDG_STATE_HOME, envNames: Object.keys(process.env) }) + '\\n');
 const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
 if (args[0] === 'ls') {
+  if (process.env.FAKE_SBX_LS_ERROR) { process.stderr.write(process.env.FAKE_SBX_LS_ERROR); process.exit(1); }
   process.stdout.write(JSON.stringify(state.sandboxes.map((name) => ({ name, status: 'running' }))));
 } else if (args[0] === 'create') {
   if (process.env.FAKE_SBX_FAIL_CREATE) { process.stderr.write('create refused'); process.exit(3); }
@@ -31,7 +33,14 @@ if (args[0] === 'ls') {
   for (; i < args.length; i++) {
     if (args[i] === '-i') continue;
     if (args[i] === '-w') { cwd = args[++i]; continue; }
-    if (args[i] === '-e') { const name = args[++i]; if (process.env[name] !== undefined) env[name] = process.env[name]; continue; }
+    if (args[i] === '-e') { const name = args[++i]; env[name] = process.env[name] === undefined ? '' : process.env[name]; continue; }
+    if (args[i] === '--env-file') {
+      for (const line of fs.readFileSync(args[++i], 'utf8').split('\\n')) {
+        const eq = line.indexOf('=');
+        if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
+      }
+      continue;
+    }
     break;
   }
   if (!state.sandboxes.includes(args[i])) { process.stderr.write('no such sandbox'); process.exit(1); }
@@ -98,12 +107,13 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
   mkdirSync(join(state, "bin"), { recursive: true });
   writeFileSync(join(state, "bin", "guest-supervisor.py"), SUPERVISOR_SOURCE);
   return {
-    version: 1,
+    version: 2,
     name: "paseo-workspace-0000abcd",
     key: "workspace:wks_1",
     stateHome: join(state, "sbx"),
     stateDir: join(state, "sandboxes"),
     locksDir: join(state, "locks"),
+    runDir: join(state, "run"),
     binDir: join(state, "bin"),
     workspace,
     mounts: [join(root, "missing-mount"), `${home}:ro`],
@@ -121,7 +131,7 @@ interface Run {
   status: number | null;
   stdout: string;
   stderr: string;
-  calls: { args: string[]; stateHome: string }[];
+  calls: { args: string[]; stateHome: string; envNames: string[] }[];
 }
 
 function run(args: string[], options: { cwd?: string; env?: Record<string, string>; input?: string } = {}): Run {
@@ -163,11 +173,13 @@ describe("wrapper", () => {
     expect(JSON.parse(result.stdout).args).toEqual(PROBE_ARGS);
   });
 
-  it("answers version queries on the host without a spec", () => {
-    const result = run(["--version"], { cwd: workspace });
-    expect(result.status).toBe(0);
-    expect(result.calls).toEqual([]);
-    expect(JSON.parse(result.stdout).args).toEqual(["--version"]);
+  it("answers version and login queries on the host without a spec", () => {
+    for (const query of [["--version"], ["auth", "status"]]) {
+      const result = run(query, { cwd: workspace });
+      expect(result.status).toBe(0);
+      expect(result.calls).toEqual([]);
+      expect(JSON.parse(result.stdout).args).toEqual(query);
+    }
   });
 
   it("fails closed for a session without a spec", () => {
@@ -221,9 +233,17 @@ describe("wrapper", () => {
     expect(guest.env.PASEO_HOME).toBeUndefined();
     expect(guest.env.UNRELATED).toBeUndefined();
 
-    // Secrets travel in the sbx client's environment, never on its command line.
+    // Secrets reach the guest through a private env file: never on a command line, never in
+    // the environment of an sbx process (which could start the sandbox daemon with it).
     const exec = first.calls.find((call) => call.args[0] === "exec");
     expect(exec?.args.join(" ")).not.toContain("s3cret-value");
+    expect(exec?.args).toContain("--env-file");
+    for (const call of first.calls) {
+      expect(call.envNames).not.toContain("LICENSE_KEY");
+      expect(call.envNames).not.toContain("ANTHROPIC_MODEL");
+      expect(call.envNames).not.toContain(SPEC_ENV);
+    }
+    expect(readdirSync(sandbox.runDir)).toEqual([]);
 
     const second = run(["--model", "m"], { env });
     expect(second.status).toBe(0);
@@ -246,9 +266,9 @@ describe("wrapper", () => {
   });
 
   it("rejects a spec from an incompatible plugin version", () => {
-    const result = run([], { env: { [SPEC_ENV]: JSON.stringify({ ...spec(), version: 2 }) } });
+    const result = run([], { env: { [SPEC_ENV]: JSON.stringify({ ...spec(), version: 99 }) } });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("unsupported PASEO_SBX_SPEC version 2");
+    expect(result.stderr).toContain("unsupported PASEO_SBX_SPEC version 99");
   });
 
   it("stops the guest tree when the daemon signals the wrapper", async () => {
@@ -405,6 +425,36 @@ describe("wrapper hardening", () => {
     session.stdin?.end();
     await exited(session);
     await waitFor(() => tools.every((pid) => !alive(pid)));
+  });
+
+  it("passes forwarded values literally and keeps multi-line ones out of the env file", () => {
+    const sandbox = spec({ env: { SPECIAL: `a=b "c" #d  'e'`, PEM: "line1\nline2" } });
+    const result = run([], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: "{}\n" });
+    expect(result.status).toBe(0);
+    const guest = JSON.parse(result.stdout);
+    expect(guest.env.SPECIAL).toBe(`a=b "c" #d  'e'`);
+    expect(guest.env.PEM).toBe("line1\nline2");
+    expect(result.stderr).toContain("passing PEM through the sbx client environment");
+    const exec = result.calls.find((call) => call.args[0] === "exec");
+    expect(exec?.args).toEqual(expect.arrayContaining(["-e", "PEM"]));
+    expect(exec?.envNames).not.toContain("SPECIAL");
+  });
+
+  it("removes env files left by sessions that died", () => {
+    const sandbox = spec();
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+    mkdirSync(sandbox.runDir, { recursive: true });
+    writeFileSync(join(sandbox.runDir, `env-${dead.stdout}.list`), "TOKEN=x\n");
+    expect(run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } }).status).toBe(0);
+    expect(readdirSync(sandbox.runDir)).toEqual([]);
+  });
+
+  it("says what to do when sbx cannot read its login", () => {
+    const result = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(spec()), FAKE_SBX_LS_ERROR: "error: not signed in to Docker" },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unlock the OS keyring");
   });
 
   it("launches the wrapper through the shell launcher with arguments intact", () => {

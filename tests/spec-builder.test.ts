@@ -126,6 +126,13 @@ describe("buildSpec bindings and validation", () => {
     expect(rejectedEnv).toEqual(["PATH", "SBX_TOKEN", "DOCKER_HOST"]);
   });
 
+  it("leaves the filesystem alone for read-only callers", async () => {
+    const { home, repo, env, paths } = setup();
+    const settings = sandboxSettingsSchema.parse({});
+    const { spec } = await buildSpec({ settings, workspaceId: "wks_1", cwd: repo, paths, env, home, prepare: false });
+    expect(existsSync(spec.claudeConfigDir)).toBe(false);
+  });
+
   it("keys a non-git directory by its canonical path", async () => {
     const { home, env, paths } = setup();
     const plain = join(root, "plain");

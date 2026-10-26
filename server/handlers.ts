@@ -37,7 +37,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
 
   server.handle(describeSandboxRpc, async ({ workspaceId, directory }) => {
     const settings = await deps.readSettings();
-    const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths });
+    const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
     const sandboxes = await listSandboxes(paths);
     const fileValues = readEnvFile(settings.envFile || paths.defaultEnvFile);
     return {

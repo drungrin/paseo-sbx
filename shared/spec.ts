@@ -2,7 +2,7 @@ import type { IsolationMode, SandboxOverride, SandboxSettings } from "./settings
 
 export const PROVIDER_ID = "claude-sbx";
 export const SPEC_ENV = "PASEO_SBX_SPEC";
-export const SPEC_VERSION = 1;
+export const SPEC_VERSION = 2;
 
 /**
  * Launch contract between the plugin (control plane) and the wrapper (data plane), passed
@@ -16,6 +16,8 @@ export interface SandboxSpec {
   stateHome: string;
   stateDir: string;
   locksDir: string;
+  /** Private (0700) dir for per-session env files; never mounted into a sandbox. */
+  runDir: string;
   binDir: string;
   /** Primary mount; the sandbox is created with it first. */
   workspace: string;

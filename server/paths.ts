@@ -15,6 +15,8 @@ export interface PluginPaths {
   stateHome: string;
   stateDir: string;
   locksDir: string;
+  /** Per-session env files handed to `sbx exec --env-file`. */
+  runDir: string;
   binDir: string;
   /** Provider command: a shell launcher that runs the wrapper with the daemon's node. */
   launcher: string;
@@ -34,6 +36,7 @@ export function pluginPaths(env: NodeJS.ProcessEnv = process.env, home = homedir
     stateHome: join(root, "sbx"),
     stateDir: join(root, "sandboxes"),
     locksDir: join(root, "locks"),
+    runDir: join(root, "run"),
     binDir,
     launcher: join(binDir, "paseo-sbx-claude"),
     wrapper: join(binDir, "paseo-sbx-claude.cjs"),

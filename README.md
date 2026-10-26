@@ -8,7 +8,7 @@ A Paseo plugin that runs each workspace's Claude agents inside its own [Docker S
 - `sbx` installed and signed in (`sbx login`). The login token lives in the OS keyring: on a headless host, use a keyring without a password, or `sbx` stops answering (HTTP 503) once the keyring locks.
 - Claude Code installed on the host and on `PATH`. The sandbox runs the host binary through a read-only mount, so host and sandbox image need compatible glibc versions.
 - `python3` in the sandbox image (the default `claude` image has it).
-- Paseo 0.12.0 or later.
+- Paseo 0.13.0 or later.
 
 ## Install
 
@@ -35,14 +35,15 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - `sbx/`: the Paseo-only `sbx` instance (`XDG_STATE_HOME` for `sbx`). Inspect it with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx ls`.
 - `claude/<sandbox>/`: per-sandbox Claude config directories. Paseo reads transcripts here for history and rewind.
 - `sandboxes/<sandbox>.json`: network rules applied to each sandbox. Removing a rule from the settings revokes it on the next launch.
+- `run/`: per-session env files, private to your user and never mounted.
 - `agents/<agent>.json`: the sandbox each agent first opened in. Resume, refresh and history reuse it, so changing the isolation mode does not move existing agents or their transcripts.
 
 ### Design decisions
 
-- **Fail closed.** The wrapper refuses to start a session without the spec the plugin injects. With the plugin disabled, `claude-sbx` agents fail with a clear error instead of running on the host. Only Paseo's model catalogue probe and `--version` run on the host.
+- **Fail closed.** The wrapper refuses to start a session without the spec the plugin injects. With the plugin disabled, `claude-sbx` agents fail with a clear error instead of running on the host. Only Paseo's model catalogue probe and the provider diagnostic (`--version`, `auth status`) run on the host.
 - **Teardown inside the guest.** The `sbx exec` client can exit while Claude is still inside a tool call, and the daemon tree-kills the wrapper and anything it spawns during shutdown. The guest supervisor stops Claude's process tree once its stdin reaches EOF, which happens however the session ends on the host.
 - **Paseo-only `sbx`.** Paseo's sandboxes live in their own `sbx` instance, started by the daemon on demand. Restarting Paseo stops them; your own sandboxes are unaffected.
-- **Secrets stay off command lines.** Forwarded values travel in the `sbx` client's environment; only variable names appear in `sbx exec` arguments. Variables the `sbx` client reads itself (`PATH`, `HOME`, `XDG_*`, `SBX_*`, `DOCKER_*`, ...) are never forwarded.
+- **Secrets stay out of sbx processes.** Forwarded values reach the guest through a 0600 file in `run/`, passed with `sbx exec --env-file` and deleted when the session ends (files of sessions that were killed go at the next launch). No sbx client runs with them in its environment, so the sandbox daemon never inherits them, whichever call starts it. A value with a newline cannot go in that file and falls back to the client environment. Variables the `sbx` client reads itself (`PATH`, `HOME`, `XDG_*`, `SBX_*`, `DOCKER_*`, ...) are never forwarded.
 - **Invalid settings fail instead of defaulting.** Falling back to defaults could silently turn routing off or reopen the network policy. The plugin keeps the last valid settings it read; without any, `claude-sbx` sessions and routed agent creation fail with a message pointing to the settings screen.
 
 ### What reaches the guest environment

@@ -32,12 +32,18 @@ export function runSbx(paths: PluginPaths, args: string[], timeoutMs = 60_000): 
   });
 }
 
+const SIGN_IN_PATTERN = /keychain[^\n]*locked|keyring[^\n]*locked|not signed in/i;
+
 export class SbxError extends Error {
   constructor(
     readonly operation: string,
     readonly result: SbxResult,
   ) {
-    super(`${operation} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`);
+    const output = (result.stderr || result.stdout).trim();
+    const hint = SIGN_IN_PATTERN.test(output)
+      ? " (sbx cannot read its login: unlock the OS keyring, or use one without a password, and run sbx login)"
+      : "";
+    super(`${operation} failed (exit ${result.code})${hint}: ${output}`);
     this.name = "SbxError";
   }
 }

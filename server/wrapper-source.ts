@@ -19,6 +19,7 @@ const path = require('node:path');
 delete process.env.ELECTRON_RUN_AS_NODE;
 
 const SPEC_ENV = 'PASEO_SBX_SPEC';
+const SPEC_VERSION = 2;
 const ENSURE_FLAG = '--paseo-sbx-ensure';
 const FORWARDED_PREFIXES = ['ANTHROPIC_', 'CLAUDE_', 'PASEO_', 'MCP_', 'DISABLE_'];
 const FORWARDED_NAMES = ['API_TIMEOUT_MS', 'MAX_THINKING_TOKENS', 'LANG', 'TZ'];
@@ -77,20 +78,51 @@ function isCatalogProbe() {
   );
 }
 
-// Paseo's provider diagnostic asks the command for its version.
+// Paseo's provider diagnostic asks the command for its version and login state.
+const INFO_COMMANDS = [['--version'], ['-v'], ['--help'], ['-h'], ['auth', 'status']];
+
 function isInfoCommand() {
-  return args.length === 1 && ['--version', '-v', '--help', '-h'].includes(args[0]);
+  return INFO_COMMANDS.some(function (command) {
+    return command.length === args.length && command.every(function (arg, index) { return args[index] === arg; });
+  });
 }
 
-function sbxEnv(spec) {
-  return Object.assign({}, process.env, { XDG_STATE_HOME: spec.stateHome });
+function isSessionValue(name, spec) {
+  return (
+    name === SPEC_ENV ||
+    HOST_ONLY.has(name) ||
+    Object.prototype.hasOwnProperty.call(spec.env, name) ||
+    FORWARDED_NAMES.includes(name) ||
+    FORWARDED_PREFIXES.some(function (prefix) { return name.startsWith(prefix); })
+  );
+}
+
+// Environment of every sbx client process, exec included: the daemon's own variables (PATH,
+// D-Bus, proxies, certificates) without anything that belongs to the session. Whichever call
+// finds the sandbox daemon stopped starts it, and the daemon keeps that environment.
+function managementEnv(spec) {
+  const env = {};
+  for (const name of Object.keys(process.env)) {
+    if (!isSessionValue(name, spec)) env[name] = process.env[name];
+  }
+  env.XDG_STATE_HOME = spec.stateHome;
+  return env;
+}
+
+const SIGN_IN_PATTERN = /keychain[^\n]*locked|keyring[^\n]*locked|not signed in/i;
+
+function sbxFailure(what, status, output) {
+  const hint = SIGN_IN_PATTERN.test(output)
+    ? ' (sbx cannot read its login: unlock the OS keyring, or use one without a password, and run sbx login)'
+    : '';
+  return new WrapperError(what + ' failed (exit ' + status + ')' + hint + ': ' + output.slice(-800));
 }
 
 // Auxiliary sbx calls never inherit stdin: an sbx exec without -i still drains it, which
 // would swallow the SDK's first stream-json message.
 function sbx(spec, sbxArgs) {
   const result = cp.spawnSync('sbx', sbxArgs, {
-    env: sbxEnv(spec),
+    env: managementEnv(spec),
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     timeout: 600000,
@@ -101,10 +133,7 @@ function sbx(spec, sbxArgs) {
 
 function sbxOk(spec, sbxArgs, what) {
   const result = sbx(spec, sbxArgs);
-  if (result.status !== 0) {
-    const output = (result.stderr || result.stdout || '').trim();
-    throw new WrapperError(what + ' failed (exit ' + result.status + '): ' + output.slice(-800));
-  }
+  if (result.status !== 0) throw sbxFailure(what, result.status, (result.stderr || result.stdout || '').trim());
   return result.stdout;
 }
 
@@ -274,30 +303,63 @@ function ensureForwarder(spec, ports) {
   sbxOk(spec, ['exec', spec.name, 'sh', '-c', script, spec.binDir, ports.join(' ')], 'loopback forwarder');
 }
 
-function sessionEnv(spec) {
-  const env = Object.assign(sbxEnv(spec), {
-    CLAUDE_CONFIG_DIR: spec.claudeConfigDir,
-    PASEO_SBX_SANDBOX: spec.name,
-  });
+// What the guest gets: Claude and Paseo variables from the session, the configured forwarded
+// variables, and the sandbox's own config dir.
+function guestEnv(spec) {
+  const env = {};
+  for (const name of Object.keys(process.env)) {
+    if (HOST_ONLY.has(name) || isReserved(name)) continue;
+    if (FORWARDED_NAMES.includes(name) || FORWARDED_PREFIXES.some(function (prefix) { return name.startsWith(prefix); })) {
+      env[name] = process.env[name];
+    }
+  }
   for (const name of Object.keys(spec.env)) {
     if (isReserved(name)) log('not forwarding reserved variable ' + name);
     else env[name] = spec.env[name];
   }
+  env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
+  env.PASEO_SBX_SANDBOX = spec.name;
   return env;
 }
 
-function forwardedEnvNames(env, spec) {
-  const names = new Set(['CLAUDE_CONFIG_DIR', 'PASEO_SBX_SANDBOX']);
+function envFilePath(spec, pid) {
+  return path.join(spec.runDir, 'env-' + pid + '.list');
+}
+
+// Env files of sessions that died without cleaning up (SIGKILL).
+function removeOrphanEnvFiles(spec) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(spec.runDir);
+  } catch (error) {
+    return;
+  }
+  for (const entry of entries) {
+    const match = /^env-(\d+)\.list$/.exec(entry);
+    if (match && !processAlive(Number(match[1]))) fs.rmSync(path.join(spec.runDir, entry), { force: true });
+  }
+}
+
+// Values reach sbx through a 0600 file outside every mount, read literally by --env-file, so they
+// appear neither on a command line nor in any sbx process environment. A value with a newline
+// cannot go in that file; it falls back to the client environment and -e NAME.
+function writeEnvFile(spec, env) {
+  fs.mkdirSync(spec.runDir, { recursive: true, mode: 0o700 });
+  const file = envFilePath(spec, process.pid);
+  const lines = [];
+  const inline = {};
   for (const name of Object.keys(env)) {
-    if (HOST_ONLY.has(name) || isReserved(name) || env[name] === undefined) continue;
-    if (FORWARDED_NAMES.includes(name) || FORWARDED_PREFIXES.some(function (prefix) { return name.startsWith(prefix); })) {
-      names.add(name);
+    if (env[name].includes('\n')) {
+      log('passing ' + name + ' through the sbx client environment: --env-file cannot hold newlines');
+      inline[name] = env[name];
+    } else {
+      lines.push(name + '=' + env[name]);
     }
   }
-  for (const name of Object.keys(spec.env)) {
-    if (!isReserved(name)) names.add(name);
-  }
-  return Array.from(names);
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, lines.join('\n') + '\n', { mode: 0o600, flag: 'wx' });
+  process.on('exit', function () { fs.rmSync(file, { force: true }); });
+  return { file: file, inline: inline };
 }
 
 function relaySignals(onSignal) {
@@ -321,19 +383,18 @@ function runOnHost(claude) {
   child.on('exit', exitLikeChild);
 }
 
-// Values travel in the sbx client's environment and only the names on its command line, so
-// tokens never show up in the host process list.
-//
 // Session teardown happens in the guest. Whatever ends the session on the host (stdin closed,
 // the client killed by any signal, the daemon tree-killing us), the guest's stdin reaches EOF
 // and guest-supervisor.py stops Claude's process tree there. Host-side cleanup cannot do this
 // reliably: the daemon tree-kills any process we spawn while it shuts us down.
-function runInSandbox(spec, claude, env) {
-  const envArgs = [];
-  for (const name of forwardedEnvNames(env, spec)) envArgs.push('-e', name);
+function runInSandbox(spec, claude, guest) {
+  const envFile = writeEnvFile(spec, guest);
+  const envArgs = ['--env-file', envFile.file];
+  for (const name of Object.keys(envFile.inline)) envArgs.push('-e', name);
   const execArgs = ['exec', '-i', '-w', process.cwd()].concat(envArgs, [
     spec.name, 'python3', path.join(spec.binDir, 'guest-supervisor.py'), claude,
   ], args);
+  const env = Object.assign(managementEnv(spec), envFile.inline);
   const child = cp.spawn('sbx', execArgs, { stdio: 'inherit', env: env });
   relaySignals(function () { child.kill('SIGTERM'); });
   child.on('exit', exitLikeChild);
@@ -348,7 +409,7 @@ function readSpec() {
   } catch (error) {
     throw new WrapperError('invalid ' + SPEC_ENV + ': ' + error.message);
   }
-  if (spec.version !== 1) throw new WrapperError('unsupported ' + SPEC_ENV + ' version ' + spec.version);
+  if (spec.version !== SPEC_VERSION) throw new WrapperError('unsupported ' + SPEC_ENV + ' version ' + spec.version);
   return spec;
 }
 
@@ -364,14 +425,15 @@ function main() {
         process.cwd() + ', args ' + JSON.stringify(args.slice(0, 12)) + ')',
     );
   }
-  const env = sessionEnv(spec);
+  removeOrphanEnvFiles(spec);
   ensureSandbox(spec, claude);
-  const ports = detectPorts(spec, env);
+  const guest = guestEnv(spec);
+  const ports = detectPorts(spec, guest);
   ensurePolicy(spec, ports);
   if (args[0] === ENSURE_FLAG) return;
   ensureForwarder(spec, ports);
   log('sandbox=' + spec.name + ' cwd=' + process.cwd() + ' claude=' + claude);
-  runInSandbox(spec, claude, env);
+  runInSandbox(spec, claude, guest);
 }
 
 try {
