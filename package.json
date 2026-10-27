@@ -28,7 +28,7 @@
     "vitest": "4.1.11",
     "zod": "^4.4.3"
   },
-  "description": "Run each Paseo workspace's Claude agents in its own Docker Sandboxes microVM.",
+  "description": "Run each Paseo workspace's Claude and Codex agents in its own Docker Sandboxes microVM.",
   "license": "MIT",
   "type": "module"
 }

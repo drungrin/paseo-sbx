@@ -1,4 +1,4 @@
-Sandboxes runs each workspace's Claude and Codex agents inside its own Docker Sandboxes microVM. Agents keep working on the same files at the same paths, but every Docker container, network, port and test browser they start lives in that workspace's VM. Sessions stop interfering with each other: a Postgres on port 5432 in one workspace does not collide with another, and container churn in one workspace no longer breaks Chromium tests in another.
+This plugin runs each workspace's Claude and Codex agents inside its own Docker Sandboxes microVM. Agents keep working on the same files at the same paths, but every Docker container, network, port and test browser they start lives in that workspace's VM. Sessions stop interfering with each other: a Postgres on port 5432 in one workspace does not collide with another, and container churn in one workspace no longer breaks Chromium tests in another.
 
 ## How it works
 
@@ -12,7 +12,7 @@ Each sandbox gets its own Claude config directory. Your settings, `CLAUDE.md`, s
 
 Requires a Linux host with the Docker Sandboxes CLI (`sbx`) installed and signed in, and Paseo 0.13 or later. The `sbx` login lives in the OS keyring, which must be unlocked; on a headless host use a keyring without a password.
 
-Turn on the agents you want under **Agents** in the plugin settings, then open **Sandboxes** in the sidebar and press **Configure** for each; the first time downloads sbx's kit for it. Store the agent's login once with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set <service>` (`openai`, with `--oauth` for a ChatGPT login; `anthropic` if your Claude does not already sign in through its own settings) and press **Update**. Then pick **Claude (sandbox)** or **Codex (sandbox)** when creating an agent, or turn on **Run new Claude agents in sandboxes**.
+Turn on the agents you want under **Agents** in the plugin settings, then open **Docker Sandboxes** in the sidebar and press **Configure** for each in its **Agents** tab; the first time downloads sbx's kit for it. Store the agent's login once with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set <service>` (`openai`, with `--oauth` for a ChatGPT login; `anthropic` if your Claude does not already sign in through its own settings) and press **Update**. Then pick **Claude (sandbox)** or **Codex (sandbox)** when creating an agent, or turn on **Run new Claude agents in sandboxes**.
 
 ## Settings
 
@@ -31,7 +31,7 @@ Turn on the agents you want under **Agents** in the plugin settings, then open *
 
 The workspace **Sandbox** panel lists the ports listening inside the VM. **Publish** makes one reachable from the host, on `127.0.0.1` by default or on every host address, with a port picked for you or fixed. That is how you check an app an agent started in the sandbox, without building it on the host. A port can be published for every sandbox of the repository, and services listening only on the VM's loopback work too.
 
-The **Sandboxes** screen opens on the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and the agents keeping each VM running, with an **Archive** action. Its other tabs list the sandboxes, the agents with their setup and login, and the templates. The workspace **Sandbox** panel opens on the sandbox, the agents keeping it running and what needs you, such as a change that waits for a recreation, each with a link to the tab that fixes it: **Services**, **Template**, **Resources**, **Mounts** and **Variables**. It also opens a terminal inside the VM for manual checks. Settings for a repository apply to every worktree of it.
+The **Docker Sandboxes** screen opens on the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and the agents keeping each VM running, with an **Archive** action. Its other tabs list the sandboxes, the agents with their setup and login, and the templates. The workspace **Sandbox** panel opens on the sandbox, the agents keeping it running and what needs you, such as a change that waits for a recreation, each with a link to the tab that fixes it: **Services**, **Template**, **Resources**, **Mounts** and **Variables**. It also opens a terminal inside the VM for manual checks. Settings for a repository apply to every worktree of it.
 
 ## Limits
 

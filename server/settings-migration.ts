@@ -16,7 +16,7 @@ function sameOverride(a: V1Override, b: V1Override): boolean {
  * Version 1 kept per-sandbox `overrides` keyed `directory:<path>` or `workspace:<id>`; version 2
  * keys settings by repository. A directory override moves to its repo unless another override
  * of the same repo disagrees. Workspace overrides cannot be resolved here. Everything that does
- * not move lands in `legacyOverrides`, which the Sandboxes screen lists for you to reassign.
+ * not move lands in `legacyOverrides`, which the Docker Sandboxes screen lists for you to reassign.
  */
 export async function migrateSettings(values: unknown, fromVersion: number): Promise<unknown> {
   if (fromVersion !== 1 || values === null || typeof values !== "object") return values;

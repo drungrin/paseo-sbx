@@ -83,7 +83,7 @@ export const sandboxSettingsSchema = z.object({
    */
   gsdPath: z.boolean().default(true),
   repos: z.record(z.string(), repoConfigSchema).default({}),
-  /** Keyed by the version 1 sandbox key; shown in the Sandboxes screen until resolved. */
+  /** Keyed by the version 1 sandbox key; shown in the Docker Sandboxes screen until resolved. */
   legacyOverrides: z.record(z.string(), legacyOverrideSchema).default({}),
   memoryAlert: memoryAlertSchema.default({ psiPercent: 10, availablePercent: 15 }),
 });

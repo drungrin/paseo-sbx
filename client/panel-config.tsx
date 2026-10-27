@@ -78,7 +78,7 @@ export function ResourcesTab({ data, theme, compact, header }: PanelTabProps) {
       {...header}
       notes={[
         "Builds start a process per CPU: with little memory, fewer CPUs keep them from running out of it.",
-        "The VM takes host memory as it needs it, up to the limit. The Sandboxes screen alerts when the host runs short.",
+        "The VM takes host memory as it needs it, up to the limit. The Docker Sandboxes screen alerts when the host runs short.",
         "The Docker disk is set for every repository in the plugin settings.",
       ]}
     >

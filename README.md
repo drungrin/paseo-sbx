@@ -1,6 +1,46 @@
-# paseo-sbx
+# Docker Sandboxes for Paseo
 
-A Paseo plugin that runs each workspace's Claude and Codex agents inside its own [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) microVM. See [OVERVIEW.md](OVERVIEW.md) for what it does and its settings.
+A Paseo plugin that runs each workspace's Claude Code and Codex agents inside its own [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) microVM. Agents work on the same files at the same paths, but every container, network, port and test browser they start lives in that workspace's VM. Workspaces stop colliding: a Postgres on port 5432 in one does not clash with another, and container churn in one no longer breaks browser tests in another.
+
+![The workspace Sandbox panel: the sandbox's memory, CPUs and template, what needs you, and the agents running in it](docs/screenshots/panel-overview.png)
+
+Screenshots show made-up projects, agents and paths.
+
+## What it shows
+
+### The workspace's Sandbox panel
+
+A panel beside each workspace, in tabs. Each tab's badge counts what it holds, or says what changed.
+
+- **Overview**: the sandbox's status, memory in use against its limit, CPUs and template, with **Open shell**, **Stop**, **Recreate** and **Remove**. Below is what needs you, each item opening the tab that fixes it: a template, resources or mounts that changed since the sandbox was created, a GSD Path member without a checkout, a variable without a value, a port that could not be published, a failed operation. Then the agents running in the sandbox, with **Open** and **Archive**.
+- **Services**: the ports listening in the VM and the ones published on the host, with the host address of each. Publish a port on `127.0.0.1` or every host address, on a port you pick or a free one, and keep it published for every sandbox of the repository.
+- **Template**: which template the repository's sandboxes start from, and a guided preparation: a shell in a clean sandbox to install your tools, then save it as a template.
+- **Resources**: memory and CPUs for the repository's sandboxes.
+- **Mounts**: every host folder the sandbox sees, where it comes from and whether it waits for a recreation; the repository's own mounts, added one at a time; and the GSD Path members.
+- **Variables**: the host variables forwarded to sessions, whether each has a value, and the repository's own.
+
+| Services | Template |
+| --- | --- |
+| ![Services tab: ports listening in the VM, the ones published on the host, and a form to publish one](docs/screenshots/panel-services.png) | ![Template tab: the repository's template among the saved ones, and the steps to prepare a new one](docs/screenshots/panel-template.png) |
+| **Mounts** | **On a phone, dark theme** |
+| ![Mounts tab: each mount with its source and access, one waiting for a recreation, the repository's mounts and the GSD Path members](docs/screenshots/panel-mounts.png) | ![The Sandbox panel's overview on a phone in the dark theme](docs/screenshots/panel-phone.png) |
+
+### The Docker Sandboxes screen
+
+Opened from the sidebar, for every sandbox at once.
+
+- **Overview**: the memory the VMs hold against the host's, with available RAM, swap and memory pressure, and an alert past the thresholds you set. Then what needs you and the agents that keep each VM running, biggest first, with **Archive**.
+- **Sandboxes**: every VM the plugin created, grouped into workspaces, template preparations and agent catalogs, with **Stop** and **Remove**.
+- **Agents**: Claude and Codex, each with its CLI version, catalog sandbox, provider and login, the command that stores its login, and **Configure** or **Update**.
+- **Templates**: the saved templates, their size and the repositories that use them.
+
+| Overview | Sandboxes |
+| --- | --- |
+| ![Overview: host memory split between the sandbox VMs, everything else and what is available, and the agents keeping each VM running](docs/screenshots/sandboxes-overview.png) | ![Sandboxes tab: workspace sandboxes, a template preparation and the agent catalogs](docs/screenshots/sandboxes-list.png) |
+| **Agents** | **Templates** |
+| ![Agents tab: Claude and Codex with their CLI version, catalog sandbox, provider and login](docs/screenshots/sandboxes-agents.png) | ![Templates tab: saved templates with their size and the repositories using them](docs/screenshots/sandboxes-templates.png) |
+
+Each tab folds the notes on how to read it under **How this works**. The screens follow Paseo's light and dark themes and fit a phone.
 
 ## Requirements
 
@@ -15,7 +55,13 @@ A Paseo plugin that runs each workspace's Claude and Codex agents inside its own
 paseo plugin install /path/to/paseo-sbx
 ```
 
-Then open **Sandboxes** in the sidebar and, in its **Agents** tab, press **Configure** for each agent: it registers the agent's provider (`claude-sbx`, `codex-sbx`) and creates its catalog sandbox.
+Then:
+
+1. Open **Docker Sandboxes** in the sidebar and, in its **Agents** tab, press **Configure** for each agent. It registers the agent's provider (`claude-sbx`, `codex-sbx`) and creates its catalog sandbox; the first time downloads sbx's kit for it. Codex is off until you turn it on under **Agents** in the plugin settings.
+2. Store each agent's login once, then press **Update**. Codex signs in with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set openai --oauth`. Claude signs in through your Claude settings; without a login there, store the `anthropic` secret the same way.
+3. Pick **Claude (sandbox)** or **Codex (sandbox)** when you create an agent, or turn on **Run new Claude agents in sandboxes** in the plugin settings.
+
+[OVERVIEW.md](OVERVIEW.md) explains every setting and the plugin's limits.
 
 ## How it works
 
@@ -53,14 +99,14 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - **Teardown inside the guest.** The `sbx exec` client can exit while Claude is still inside a tool call, and the daemon tree-kills the wrapper and anything it spawns during shutdown. The guest supervisor stops Claude's process tree once its stdin reaches EOF, which happens however the session ends on the host.
 - **Paseo-only `sbx`.** Paseo's sandboxes live in their own `sbx` instance, started by the daemon on demand. Restarting Paseo stops them; your own sandboxes are unaffected.
 - **Secrets stay out of sbx processes.** Forwarded values reach the guest through a 0600 file in `run/`, passed with `sbx exec --env-file` and deleted when the session ends (files of sessions that were killed go at the next launch). No sbx client runs with them in its environment, so the sandbox daemon never inherits them, whichever call starts it. A value with a newline cannot go in that file and falls back to the client environment. Variables the `sbx` client reads itself (`PATH`, `HOME`, `XDG_*`, `SBX_*`, `DOCKER_*`, ...) are never forwarded.
-- **Settings per repository.** Templates, memory, CPUs, mounts and variables are keyed by the repository's git common dir, so every worktree of a repo shares them while each gets its own sandbox. A sandbox keeps the repository it was created for. Version 1 per-sandbox overrides that could not move to one repository are listed in the Sandboxes screen to reassign.
+- **Settings per repository.** Templates, memory, CPUs, mounts and variables are keyed by the repository's git common dir, so every worktree of a repo shares them while each gets its own sandbox. A sandbox keeps the repository it was created for. Version 1 per-sandbox overrides that could not move to one repository are listed in the Docker Sandboxes screen to reassign.
 - **Templates.** A template is a saved sandbox filesystem in the Paseo instance (`sbx template save`). It does not include the images of the VM's own Docker. sbx saves only a stopped sandbox, so the plugin stops it first and refuses while sessions run in it. Prepare one in a clean sandbox, without your variables or credentials: saving a working sandbox captures `/home/agent`, login tokens included.
 - **Recreate needs archived agents.** The plugin API can neither close nor reopen an agent's runtime, and a resident agent can start a turn at any time, so the plugin recreates a sandbox only when every agent bound to it is archived and no session runs. The server holds the sandbox lock for the whole operation and marks it so new launches fail fast.
 - **Home mounts are bind mounts.** A mount under your home is bind-mounted at the same place under the guest's home at every launch, with the sandbox user's sudo, since binds do not survive a VM restart. A symlink would need no root, but GSD Path refuses symlinked runtime storage.
 - **Docker disk per sandbox.** sbx sizes `/var/lib/docker` from `sandbox.disk.dockerVolume`, a setting shared by every sbx instance of your user. The plugin passes `DOCKER_SANDBOXES_DOCKER_SIZE` to `sbx create` instead, so your own sandboxes keep sbx's size. The volume is sparse on the host.
 - **Memory without entering the VM.** Each VM's resident memory is read from its `containerd-shim-nerdbox-v1` process, matched to the sandbox through the `config.json` in the process's working directory. Any `sbx exec` would postpone the auto-stop, and polling through it would keep VMs running.
 - **Every publication goes through a relay.** sbx publishes only what listens on the VM's external interface, and dev servers often listen on loopback. The guest agent listens on a port of its own (41000-41999) and forwards to the service's port on the guest loopback, which also reaches services listening on `0.0.0.0`. Its own port keeps it from blocking the service if the service later binds every address. The agent writes the listening ports to the sandbox's Claude config dir, the one mount both sides can write, so the panel lists them without `sbx exec`; the host reads that file as untrusted input. Publications are kept per sandbox and reconciled at every launch; a repository's auto-published ports are added there. Each gets an explicit host port, picked when you leave it empty: sbx 0.49 restores publications at every start and keeps an ephemeral one in a form `--unpublish` cannot remove, so it would come back after each restart. An explicit port is removed for good and keeps the URL stable.
-- **No stop on archive.** Archiving an agent closes its runtime, and the VM stops 30 seconds after its last session. What keeps VMs running is agents that are not archived; the plugin API cannot close their runtimes, so the Sandboxes screen lists them with an Archive action.
+- **No stop on archive.** Archiving an agent closes its runtime, and the VM stops 30 seconds after its last session. What keeps VMs running is agents that are not archived; the plugin API cannot close their runtimes, so the Docker Sandboxes screen lists them with an Archive action.
 - **Invalid settings fail instead of defaulting.** Falling back to defaults could silently turn routing off or reopen the network policy. The plugin keeps the last valid settings it read; without any, `claude-sbx` sessions and routed agent creation fail with a message pointing to the settings screen.
 
 ### What reaches the guest environment
@@ -78,7 +124,7 @@ Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_`
 ## Troubleshooting
 
 - **`claude-sbx` agents fail with "missing PASEO_SBX_SPEC"**: the plugin is disabled or failed to load (`paseo plugin ls`).
-- **The Sandboxes screen shows the daemon as unavailable**: run `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx daemon status`. A locked keyring is the usual cause.
+- **The Docker Sandboxes screen shows the sbx daemon as not running**: run `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx daemon status`. A locked keyring is the usual cause.
 - **Agents cannot reach a host service**: add its port under **Extra host ports**. Inside the sandbox, `127.0.0.1:<port>` is relayed to the host.
 - **A build dies with exit code 137**: the VM ran out of memory. Give the repository more memory or fewer CPUs in the **Resources** tab of its **Sandbox** panel, then recreate the sandbox.
 - **Tests fail with "No space left on device"** from a database in the VM's Docker: raise **Docker disk per sandbox**, then recreate the sandbox.

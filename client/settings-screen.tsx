@@ -156,7 +156,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             <SettingsSwitch
               key={agent}
               label={AGENTS[agent].label}
-              hint="Adds it to the + menu. Set it up in Sandboxes → Agents; turning it off keeps its agents."
+              hint="Adds it to the + menu. Set it up in Docker Sandboxes → Agents; turning it off keeps its agents."
               value={draft.enabledAgents.includes(agent)}
               onValueChange={(on) =>
                 setDraft((current) => ({
@@ -225,7 +225,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
         <SettingsCard>
           <SettingsInput
             label="Alert at memory pressure (%)"
-            hint="The host's memory PSI over the last minute. The Sandboxes screen raises an alert at or above it."
+            hint="The host's memory PSI over the last minute. The Docker Sandboxes screen raises an alert at or above it."
             initialValue={draft.psiPercent}
             onChangeText={update("psiPercent")}
           />

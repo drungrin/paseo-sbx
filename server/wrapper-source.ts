@@ -817,7 +817,7 @@ function main() {
     }
     const catalog = readCatalog();
     if (!catalog) {
-      throw new WrapperError('no catalog sandbox for ' + AGENT + ': press Configure for it in the Sandboxes screen');
+      throw new WrapperError('no catalog sandbox for ' + AGENT + ': press Configure for it in Docker Sandboxes, Agents tab');
     }
     if (isVersionQuery()) return answerVersion(catalog);
     return runInCatalog(catalog);
