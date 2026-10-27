@@ -29,6 +29,10 @@
     "zod": "^4.4.3"
   },
   "description": "Run each Paseo workspace's Claude and Codex agents in its own Docker Sandboxes microVM.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drungrin/paseo-sbx.git"
+  },
   "license": "MIT",
   "type": "module"
 }
