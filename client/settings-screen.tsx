@@ -126,7 +126,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
   const [draft, setDraft] = useState(() => toDraft(settings.values));
   const templates = useTemplates();
   const templateOptions = [
-    { label: "sbx image for Claude", value: "" },
+    { label: "sbx image", value: "" },
     ...(templates.data?.templates ?? [])
       .filter((template) => !template.base)
       .map((template) => ({ label: template.ref.replace(/^docker\.io\/library\//, ""), value: template.ref })),
@@ -156,7 +156,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             <SettingsSwitch
               key={agent}
               label={AGENTS[agent].label}
-              hint="Adds it to the + menu; set it up with Configure in the Sandboxes screen. Turning it off keeps its agents."
+              hint="Adds it to the + menu. Set it up in Sandboxes → Agents; turning it off keeps its agents."
               value={draft.enabledAgents.includes(agent)}
               onValueChange={(on) =>
                 setDraft((current) => ({
@@ -218,25 +218,31 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             initialValue={draft.dockerDiskGiB}
             onChangeText={update("dockerDiskGiB")}
           />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Memory alerts">
+        <SettingsCard>
           <SettingsInput
             label="Alert at memory pressure (%)"
-            hint="The host's memory PSI over the last minute. The Sandboxes screen alerts at or above it."
+            hint="The host's memory PSI over the last minute. The Sandboxes screen raises an alert at or above it."
             initialValue={draft.psiPercent}
             onChangeText={update("psiPercent")}
           />
           <SettingsInput
             label="Alert below available RAM (%)"
+            hint="Share of the host's RAM still available."
             initialValue={draft.availablePercent}
             onChangeText={update("availablePercent")}
           />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Environment">
+      <SettingsSection title="Template and mounts">
         <SettingsCard>
           <SettingsSelect
             label="Default template"
-            hint="New sandboxes start from it unless their repository picks another in its Sandbox panel."
+            hint="New sandboxes start from it unless their repository picks another in its Sandbox panel, under Template."
             value={draft.template}
             options={templateOptions}
             onValueChange={update("template")}
@@ -260,6 +266,11 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             initialValue={draft.claudeShared}
             onChangeText={update("claudeShared")}
           />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Variables">
+        <SettingsCard>
           <SettingsInput
             label="Forwarded variables"
             hint="For every repository. Variables your agents get from your shell profile. Values come from the variables file, then the daemon environment."
@@ -273,6 +284,11 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             initialValue={draft.envFile}
             onChangeText={update("envFile")}
           />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Git">
+        <SettingsCard>
           <SettingsSwitch
             label="GitHub over HTTPS"
             hint="git in the sandbox reaches GitHub SSH remotes over HTTPS, where the sbx proxy signs in with the secret from sbx secret set github. Sandboxes have no SSH keys."
@@ -300,7 +316,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
       </SettingsSection>
 
       <SettingsCard>
-        <SettingsRow label="Template, mounts, memory, CPUs and Docker disk apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them." />
+        <SettingsRow label="Template, mounts, memory, CPUs and Docker disk apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them; variables reach the next session." />
         <SettingsAction
           label={error ?? settings.saveError ?? "Save settings"}
           actionLabel={settings.saving ? "Saving…" : "Save"}

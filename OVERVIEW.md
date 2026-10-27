@@ -31,7 +31,7 @@ Turn on the agents you want under **Agents** in the plugin settings, then open *
 
 The workspace **Sandbox** panel lists the ports listening inside the VM. **Publish** makes one reachable from the host, on `127.0.0.1` by default or on every host address, with a port picked for you or fixed. That is how you check an app an agent started in the sandbox, without building it on the host. A port can be published for every sandbox of the repository, and services listening only on the VM's loopback work too.
 
-The **Sandboxes** screen shows the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and lists the agents keeping each VM running, with an **Archive** action. The workspace **Sandbox** panel shows the sandbox, the agents keeping it running, its template, mounts and variables, and opens a terminal inside it for manual checks. Settings for a repository apply to every worktree of it.
+The **Sandboxes** screen opens on the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and the agents keeping each VM running, with an **Archive** action. Its other tabs list the sandboxes, the agents with their setup and login, and the templates. The workspace **Sandbox** panel opens on the sandbox, the agents keeping it running and what needs you, such as a change that waits for a recreation, each with a link to the tab that fixes it: **Services**, **Template**, **Resources**, **Mounts** and **Variables**. It also opens a terminal inside the VM for manual checks. Settings for a repository apply to every worktree of it.
 
 ## Limits
 

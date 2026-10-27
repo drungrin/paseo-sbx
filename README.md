@@ -15,7 +15,7 @@ A Paseo plugin that runs each workspace's Claude and Codex agents inside its own
 paseo plugin install /path/to/paseo-sbx
 ```
 
-Then open **Sandboxes** in the sidebar and press **Configure** for each agent: it registers the agent's provider (`claude-sbx`, `codex-sbx`) and creates its catalog sandbox.
+Then open **Sandboxes** in the sidebar and, in its **Agents** tab, press **Configure** for each agent: it registers the agent's provider (`claude-sbx`, `codex-sbx`) and creates its catalog sandbox.
 
 ## How it works
 
@@ -80,7 +80,7 @@ Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_`
 - **`claude-sbx` agents fail with "missing PASEO_SBX_SPEC"**: the plugin is disabled or failed to load (`paseo plugin ls`).
 - **The Sandboxes screen shows the daemon as unavailable**: run `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx daemon status`. A locked keyring is the usual cause.
 - **Agents cannot reach a host service**: add its port under **Extra host ports**. Inside the sandbox, `127.0.0.1:<port>` is relayed to the host.
-- **A build dies with exit code 137**: the VM ran out of memory. Give the repository more memory or fewer CPUs in its **Sandbox** panel, then recreate the sandbox.
+- **A build dies with exit code 137**: the VM ran out of memory. Give the repository more memory or fewer CPUs in the **Resources** tab of its **Sandbox** panel, then recreate the sandbox.
 - **Tests fail with "No space left on device"** from a database in the VM's Docker: raise **Docker disk per sandbox**, then recreate the sandbox.
 - **A published port shows "not published"**: its host port was taken when the sandbox started. Pick another fixed port, or leave it empty.
 - **Wrapper logs** appear in the daemon log as Claude Agent SDK stderr lines prefixed with `[paseo-sbx]`.

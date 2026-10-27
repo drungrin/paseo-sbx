@@ -28,6 +28,8 @@ export function useSandboxes() {
   return useQuery({ queryKey: ["sandboxes"], queryFn: () => list({}), refetchInterval: 10_000 });
 }
 
+export type Description = z.infer<(typeof describeSandboxRpc)["output"]>;
+
 export function useSandboxDescription(workspaceId: string, directory: string | null) {
   const describe = useRpc(describeSandboxRpc);
   return useQuery({
@@ -96,6 +98,19 @@ export function useSandboxAction() {
     },
     onSettled: invalidate,
   });
+}
+
+interface Shell {
+  name: string;
+  command: string;
+  args: string[];
+}
+
+/** Opens a sandbox shell as a Paseo terminal of the workspace. */
+export function useOpenTerminal(workspaceId: string) {
+  const paseo = usePaseo();
+  return (shell: Shell) =>
+    paseo.terminals.create({ workspaceId, name: `sbx ${shell.name}`, command: shell.command, args: shell.args });
 }
 
 export function useArchiveAgent() {
