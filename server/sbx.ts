@@ -129,6 +129,18 @@ export async function listSandboxes(paths: PluginPaths): Promise<SandboxSummary[
   });
 }
 
+/**
+ * Refuses an operation that can download sbx's kit image from Docker Hub until you allow image
+ * downloads: catalogs, and sandboxes created without a template. A template's sandbox uses the
+ * local image (`--pull never`).
+ */
+export function assertImageDownloadsAllowed(settings: { allowImageDownloads: boolean }, operation: string): void {
+  if (settings.allowImageDownloads) return;
+  throw new Error(
+    `${operation} can download sbx's kit image from Docker Hub: allow image downloads in Docker Sandboxes → Agents, or in the plugin settings, first`,
+  );
+}
+
 /** RPC input names must be ones this plugin generates; they also become file names. */
 export function assertSandboxName(name: string): void {
   if (!/^paseo-[a-z0-9-]+-[0-9a-f]{8}$/.test(name)) throw new Error(`not a paseo-sbx sandbox: ${name}`);

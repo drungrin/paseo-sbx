@@ -1,3 +1,4 @@
+import { DownloadConsentPrompt, useDownloadConsent } from "./consent";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
@@ -260,6 +261,8 @@ function Prepare({
     onSettled: invalidate,
   });
   const prep = data.templatePrep;
+  // Without a repository template, the preparation starts from sbx's kit image.
+  const consent = useDownloadConsent();
   return (
     <Section
       theme={theme}
@@ -305,9 +308,10 @@ function Prepare({
               kind="primary"
               label="Prepare template"
               busy={prepare.isPending}
-              onPress={() => prepare.mutate()}
+              onPress={() => consent.request(() => prepare.mutate(), data.template.configured === null)}
             />
           </Actions>
+          <DownloadConsentPrompt consent={consent} theme={theme} />
         </>
       )}
       {prepare.error ? (

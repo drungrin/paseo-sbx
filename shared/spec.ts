@@ -27,6 +27,8 @@ export interface SandboxSpec {
   repoKey: string;
   /** sbx template reference to create the sandbox from; null uses sbx's image for Claude. */
   template: string | null;
+  /** Your consent to download sbx's kit image, which creating without a template can need. */
+  allowImageDownloads: boolean;
   /** `XDG_STATE_HOME` of the Paseo-only sbx instance. */
   stateHome: string;
   stateDir: string;

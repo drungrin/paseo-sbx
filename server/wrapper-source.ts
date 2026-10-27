@@ -279,6 +279,14 @@ function ensureSandbox(spec) {
     checkRecreating(spec);
     const list = JSON.parse(sbxOk(spec, ['ls', '--json'], 'sbx ls') || '[]');
     if (list.some(function (sandbox) { return sandbox.name === spec.name; })) return;
+    // Without a template sbx creates from its kit image, which it downloads from Docker Hub
+    // when it is not cached: only with your consent. A template's image is local.
+    if (!spec.template && !spec.allowImageDownloads) {
+      throw new WrapperError(
+        'creating ' + spec.name + " without a template can download sbx's " + spec.kit + ' kit image from Docker Hub:' +
+          ' allow image downloads in Docker Sandboxes → Agents, or in the plugin settings, first',
+      );
+    }
     const seen = new Set([spec.workspace]);
     const mounts = [spec.workspace];
     // The configured mounts it gets; the workspace panel compares them with the current settings.

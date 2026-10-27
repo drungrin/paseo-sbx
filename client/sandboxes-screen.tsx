@@ -1,3 +1,4 @@
+import { DownloadConsentPrompt, useDownloadConsent } from "./consent";
 import { useSettings, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { useState } from "react";
 import { Text, View } from "react-native";
@@ -682,6 +683,8 @@ function loginView(agent: AgentStatus, stateHome: string): { tone: Tone; label: 
 
 function AgentList({ status, theme, compact }: { status: Status; theme: Theme; compact: boolean }) {
   const configure = useConfigureAgent();
+  // A catalog is created from sbx's kit image: Configure and Update ask before downloading it.
+  const consent = useDownloadConsent();
   const shown = status.agents.filter((agent) => agent.enabled || agent.provider.configured);
   if (shown.length === 0) {
     return (
@@ -694,6 +697,7 @@ function AgentList({ status, theme, compact }: { status: Status; theme: Theme; c
   }
   return (
     <>
+      <DownloadConsentPrompt consent={consent} theme={theme} standing />
       <Columns compact={compact}>
         {shown.map((agent) => (
           <Column key={agent.id} compact={compact}>
@@ -703,7 +707,7 @@ function AgentList({ status, theme, compact }: { status: Status; theme: Theme; c
               theme={theme}
               busy={configure.isPending}
               configuring={configure.isPending && configure.variables?.agent === agent.id}
-              onConfigure={(update) => configure.mutate({ agent: agent.id, update })}
+              onConfigure={(update) => consent.request(() => configure.mutate({ agent: agent.id, update }))}
             />
           </Column>
         ))}

@@ -6,7 +6,16 @@ import type { ServerDeps } from "./hooks";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
-import { SbxError, assertSandboxName, listSandboxes, removeSandbox, runSbx, runSbxOk, stopSandboxLocked } from "./sbx";
+import {
+  SbxError,
+  assertImageDownloadsAllowed,
+  assertSandboxName,
+  listSandboxes,
+  removeSandbox,
+  runSbx,
+  runSbxOk,
+  stopSandboxLocked,
+} from "./sbx";
 import { templateFor } from "./spec-builder";
 import { liveLeases, readSandboxState, writeSandboxState } from "./state";
 
@@ -133,6 +142,7 @@ export async function ensureTemplatePrep(deps: ServerDeps, cwd: string): Promise
   const existing = await listSandboxes(paths);
   if (existing.some((sandbox) => sandbox.name === name)) return { name, repoKey: repo.key };
   const template = templateFor(settings, repo.key);
+  if (!template) assertImageDownloadsAllowed(settings, "Preparing a template from sbx's image");
   const args = ["create", "--name", name, "--memory", `${memoryMiB(settings, undefined, totalmem())}m`, "--no-progress"];
   let kit = "claude";
   if (template) {

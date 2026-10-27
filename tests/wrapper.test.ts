@@ -70,6 +70,7 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
     key: "workspace:wks_1",
     repoKey: `dir:${workspace}`,
     template: null,
+    allowImageDownloads: true,
     stateHome: join(state, "sbx"),
     stateDir: join(state, "sandboxes"),
     locksDir: join(state, "locks"),
@@ -534,6 +535,32 @@ describe("wrapper and the plugin's sandbox operations", () => {
   function setFakeState(state: object) {
     writeFileSync(join(root, "sbx-state.json"), JSON.stringify(state));
   }
+
+  it("creates a sandbox without a template only with consent to download sbx's kit image", () => {
+    const ensure = (overrides: Partial<SandboxSpec>) =>
+      run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(spec(overrides)) } });
+    const refused = ensure({ allowImageDownloads: false });
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain("can download sbx's claude kit image from Docker Hub");
+    expect(refused.calls.some((call) => call.args[0] === "create")).toBe(false);
+
+    // A sandbox that exists needs no consent: nothing is created.
+    expect(ensure({}).status).toBe(0);
+    const existing = ensure({ allowImageDownloads: false });
+    expect(existing.status).toBe(0);
+    expect(existing.calls.some((call) => call.args[0] === "create")).toBe(false);
+  });
+
+  it("creates a sandbox from a template without consent: its image is local", () => {
+    setFakeState({ templates: [appTemplate] });
+    const result = run(["--paseo-sbx-ensure"], {
+      env: { [SPEC_ENV]: JSON.stringify(spec({ template: "app:v2", allowImageDownloads: false })) },
+    });
+    expect(result.status).toBe(0);
+    expect(result.calls.find((call) => call.args[0] === "create")?.args).toEqual(
+      expect.arrayContaining(["-t", "app:v2", "--pull", "never"]),
+    );
+  });
 
   it("creates the sandbox from the repository's template and records what it used", () => {
     setFakeState({ templates: [appTemplate] });

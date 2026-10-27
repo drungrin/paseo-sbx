@@ -12,7 +12,7 @@ Each sandbox gets its own Claude config directory. Your settings, `CLAUDE.md`, s
 
 Requires a Linux host with the Docker Sandboxes CLI (`sbx`) installed and signed in, and Paseo 0.13 or later. The `sbx` login lives in the OS keyring, which must be unlocked; on a headless host use a keyring without a password.
 
-Turn on the agents you want under **Agents** in the plugin settings, then open **Docker Sandboxes** in the sidebar and press **Configure** for each in its **Agents** tab; the first time downloads sbx's kit for it. Store the agent's login once with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set <service>` (`openai`, with `--oauth` for a ChatGPT login; `anthropic` if your Claude does not already sign in through its own settings) and press **Update**. Then pick **Claude (sandbox)** or **Codex (sandbox)** when creating an agent, or turn on **Run new Claude agents in sandboxes**.
+Turn on the agents you want under **Agents** in the plugin settings, then open **Docker Sandboxes** in the sidebar and press **Configure** for each in its **Agents** tab, allowing the download of sbx's kit image when it asks. Store the agent's login once with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set <service>` (`openai`, with `--oauth` for a ChatGPT login; `anthropic` if your Claude does not already sign in through its own settings) and press **Update**. Then pick **Claude (sandbox)** or **Codex (sandbox)** when creating an agent, or turn on **Run new Claude agents in sandboxes**.
 
 ## Settings
 
@@ -37,7 +37,7 @@ The **Docker Sandboxes** screen opens on the memory the VMs hold, the host's ava
 
 Agents send their prompts and tool results to their provider, Anthropic or OpenAI, or to the gateway your Claude settings name, as they do on the host. Requests leave the VM through the sbx network proxy on this host, which adds the stored secret. The plugin sends nothing anywhere else.
 
-The plugin downloads nothing when it loads. **Configure** downloads the agent's sbx kit image from Docker Hub (`docker/sandbox-templates`), and sandboxes created without a template start from that image. Templates you save stay on this host, in Paseo's sbx instance. Inside a VM, agents download what they need as they would on the host, within the network policy.
+Nothing is downloaded until you allow it. **Configure** and **Update**, and a sandbox or template preparation without a template, can download the agent's sbx kit image from Docker Hub (`docker/sandbox-templates`), about 1.1 GB for Claude and 1.3 GB for Codex, so they ask first; declining runs nothing. Your answer is the **Allow downloading sbx images** setting, which you can turn off again. Sandboxes created from your templates use the local image, and templates you save stay on this host, in Paseo's sbx instance. Inside a VM, agents download what they need as they would on the host, within the network policy.
 
 Agents in a sandbox see the workspace, the mounted folders and the forwarded variables. Transcripts, catalog records and sandbox state stay under `~/.local/state/paseo-sbx`.
 

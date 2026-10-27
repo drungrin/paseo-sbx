@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { shellCommandRpc, shellResultSchema } from "../shared/rpc";
 import { agentState, agentTone, errorMessage, formatMiB, operationLabel, plural, sandboxStatus, shortRef } from "./format";
+import { DownloadConsentPrompt, useDownloadConsent } from "./consent";
 import { Column, Columns, Empty, Frame, Needs, StatusChip, Tabbed, type Tab } from "./frame";
 import {
   Actions,
@@ -245,8 +246,11 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
       openTerminal(shellResultSchema.parse(await awaitOperation(await getShell({ workspaceId, directory })))),
     onSettled: invalidate,
   });
+  const consent = useDownloadConsent();
   const accent = toneColor(theme, "accent");
   const created = data.status !== null;
+  // Without a template the sandbox is created from sbx's kit image, which can be downloaded.
+  const fromImage = data.template.configured === null;
   const hostCpus = status.data?.hostCpus ?? null;
   const cpus = data.cpus === 0 ? (hostCpus === null ? "All" : String(hostCpus)) : String(data.cpus);
   const working = data.agents.filter((agent) => agent.activeTurn).length;
@@ -373,7 +377,7 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
           label={created ? "Open shell" : "Create and open shell"}
           busy={openShell.isPending}
           disabled={busy}
-          onPress={() => openShell.mutate()}
+          onPress={() => consent.request(() => openShell.mutate(), !created && fromImage)}
         />
         {created ? (
           <>
@@ -388,7 +392,7 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
               label="Recreate"
               confirmLabel="Confirm recreate"
               disabled={busy || data.recreateBlockers.length > 0}
-              onConfirm={() => action.mutate({ name: data.name, action: "recreate" })}
+              onConfirm={() => consent.request(() => action.mutate({ name: data.name, action: "recreate" }), fromImage)}
             />
             <ConfirmButton
               theme={theme}
@@ -400,6 +404,7 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
           </>
         ) : null}
       </Actions>
+      <DownloadConsentPrompt consent={consent} theme={theme} />
       {running ? (
         <View accessibilityLiveRegion="polite" style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
           <Pulse color={accent} size={6} />

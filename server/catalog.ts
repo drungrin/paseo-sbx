@@ -5,7 +5,7 @@ import type { SandboxSettings } from "../shared/settings";
 import { catalogName } from "../shared/spec";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
-import { listSandboxes, removeSandbox, runSbx, runSbxOk, storedSecrets } from "./sbx";
+import { assertImageDownloadsAllowed, listSandboxes, removeSandbox, runSbx, runSbxOk, storedSecrets } from "./sbx";
 
 /**
  * What the wrapper needs to run an agent's catalog, diagnostic, archive and history runs, which
@@ -119,6 +119,8 @@ export async function ensureCatalog(
       const record = readCatalog(paths, agent);
       if (record) return record;
     }
+    // Before an update removes the catalog it has.
+    assertImageDownloadsAllowed(settings, `Setting up the ${descriptor.label} catalog`);
     if (exists) {
       // sbx deletes secrets scoped to a sandbox along with it.
       const scoped = (await storedSecrets(paths, 0)).filter((secret) => secret.scope === name);

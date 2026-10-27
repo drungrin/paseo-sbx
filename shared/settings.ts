@@ -50,6 +50,12 @@ export const sandboxSettingsSchema = z.object({
   enabledAgents: z.array(z.enum(AGENT_IDS)).default(["claude"]),
   /** Rewrites new `claude` agents to `claude-sbx`, except under `excludedPaths`. */
   routeClaudeAgents: z.boolean().default(false),
+  /**
+   * Your consent to download sbx's agent kit images from Docker Hub. Without it, nothing creates
+   * a sandbox that could download one: catalogs, and sandboxes or template preparations without
+   * a template. Sandboxes created from a template use the local image only.
+   */
+  allowImageDownloads: z.boolean().default(false),
   isolation: z.enum(ISOLATION_MODES).default("workspace"),
   memoryPercent: z.number().min(1).max(90).default(10),
   memoryFloorGiB: z.number().min(1).default(2),

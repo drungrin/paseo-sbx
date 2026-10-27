@@ -294,6 +294,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     key: identity.key,
     repoKey,
     template: templateFor(settings, repoKey),
+    allowImageDownloads: settings.allowImageDownloads,
     stateHome: paths.stateHome,
     stateDir: paths.stateDir,
     locksDir: paths.locksDir,

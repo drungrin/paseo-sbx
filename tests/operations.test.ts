@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sandboxSettingsSchema, type SandboxSettings } from "../shared/settings";
 import { activeAgentsBySandbox } from "../server/agents";
+import { ensureCatalog } from "../server/catalog";
 import { writeBinding } from "../server/bindings";
 import type { ServerDeps } from "../server/hooks";
 import { installBinFiles, pluginPaths, type PluginPaths } from "../server/paths";
@@ -37,7 +38,7 @@ beforeEach(() => {
   workspace = join(root, "app");
   mkdirSync(workspace);
   execFileSync("git", ["-C", workspace, "init", "-q"]);
-  settings = sandboxSettingsSchema.parse({ claudeShared: [], isolation: "directory" });
+  settings = sandboxSettingsSchema.parse({ claudeShared: [], isolation: "directory", allowImageDownloads: true });
   deps = { paths, readSettings: async () => settings };
 });
 
@@ -112,6 +113,35 @@ describe("recreate", () => {
     expect(readFileSync(join(configDir, "projects", "session.jsonl"), "utf8")).toBe("transcript");
     expect(existsSync(join(paths.locksDir, `${name}.recreating`))).toBe(false);
     expect(existsSync(join(paths.locksDir, name))).toBe(false);
+  });
+
+  it("refuses to recreate from sbx's image without consent to download, and keeps the sandbox", async () => {
+    const name = await createdSandbox();
+    settings = { ...settings, allowImageDownloads: false };
+    fake.clearCalls();
+
+    await expect(recreateSandbox(deps, fakePaseo(() => []), name)).rejects.toThrow("can download sbx's kit image from Docker Hub");
+    expect(fake.calls().some((call) => call.args[0] === "rm" || call.args[0] === "create")).toBe(false);
+    expect(fake.sandboxes()).toEqual([name]);
+  });
+});
+
+describe("image download consent", () => {
+  it("refuses to set up a catalog without it, before removing the one there", async () => {
+    const none = { ...settings, allowImageDownloads: false };
+    await expect(ensureCatalog(paths, none, "claude", { update: false })).rejects.toThrow("Setting up the Claude (sandbox) catalog");
+    expect(fake.calls().some((call) => call.args[0] === "create")).toBe(false);
+  });
+
+  it("refuses to prepare a template from sbx's image without it, but not from a template", async () => {
+    settings = { ...settings, allowImageDownloads: false };
+    await expect(ensureTemplatePrep(deps, workspace)).rejects.toThrow("Preparing a template from sbx's image");
+    expect(fake.calls().some((call) => call.args[0] === "create")).toBe(false);
+
+    fake.setState({ templates: [{ id: "abc", repository: "docker.io/library/app", tag: "v1" }] });
+    settings = { ...settings, template: "app:v1" };
+    await ensureTemplatePrep(deps, workspace);
+    expect(fake.calls().find((call) => call.args[0] === "create")?.args).toEqual(expect.arrayContaining(["-t", "app:v1", "--pull", "never"]));
   });
 });
 

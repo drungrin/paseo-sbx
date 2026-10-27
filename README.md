@@ -59,7 +59,7 @@ Releases are published on npm. To follow `main`, install from GitHub with `paseo
 
 Then:
 
-1. Open **Docker Sandboxes** in the sidebar and, in its **Agents** tab, press **Configure** for each agent. It registers the agent's provider (`claude-sbx`, `codex-sbx`) and creates its catalog sandbox; the first time downloads sbx's kit for it. Codex is off until you turn it on under **Agents** in the plugin settings.
+1. Open **Docker Sandboxes** in the sidebar and, in its **Agents** tab, press **Configure** for each agent. It registers the agent's provider (`claude-sbx`, `codex-sbx`) and creates its catalog sandbox. The first time, it asks you to allow downloading sbx's kit image from Docker Hub. Codex is off until you turn it on under **Agents** in the plugin settings.
 2. Store each agent's login once, then press **Update**. Codex signs in with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx secret set openai --oauth`. Claude signs in through your Claude settings; without a login there, store the `anthropic` secret the same way.
 3. Pick **Claude (sandbox)** or **Codex (sandbox)** when you create an agent, or turn on **Run new Claude agents in sandboxes** in the plugin settings.
 
@@ -92,6 +92,7 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 ### Design decisions
 
 - **Fail closed, and nothing on the host.** The wrapper refuses to start a session without the spec the plugin injects: with the plugin disabled, sandboxed agents fail with a clear error. Paseo runs some things outside sessions (model catalog, diagnostics, Codex's archive and unarchive, history of archived agents); those go to the agent's catalog sandbox, never to the host. A session is told apart by the `PASEO_AGENT_ID` Paseo adds to it, unless the daemon itself was started with that value (a daemon launched from an agent session).
+- **Downloads need your consent.** Catalogs, and sandboxes or template preparations without a template, can download sbx's kit image from Docker Hub. The server and the wrapper refuse them until the `allowImageDownloads` setting is on, and the app asks before it starts one, so declining starts nothing. A template's sandbox is created with `--pull never` and needs no consent.
 - **One launcher per agent.** Some of Paseo's version probes run only the provider command with `--version`, dropping any argument, so the agent cannot be an argument: each agent's launcher names it in the environment.
 - **CLIs from the template.** Sessions run the CLI found on the template's `PATH`; a template built for one agent's kit lacks the others, so a workspace with both Claude and Codex agents needs a template with both. sbx applies a kit to a template's image only if the kit built it: sandboxes are created with the kit the template's flavor names, or the starting agent's without a template.
 - **The catalog answers without a session.** Each agent's catalog sandbox is created from sbx's kit, without your workspace, and records the CLI's version. Paseo asks for the version first and gives Claude's model probe 5 s, so the version comes from the record while the catalog VM starts. Claude's settings reach the catalog without their `env` (a gateway's token): the env goes to each run through its private env file.

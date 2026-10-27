@@ -4,7 +4,7 @@ import { activeAgentsBySandbox } from "./agents";
 import type { ServerDeps } from "./hooks";
 import { newLockToken, withSandboxLock } from "./lock";
 import type { PluginPaths } from "./paths";
-import { assertSandboxName, prepareSandbox, removeSandboxLocked } from "./sbx";
+import { assertImageDownloadsAllowed, assertSandboxName, prepareSandbox, removeSandboxLocked } from "./sbx";
 import { buildSpec } from "./spec-builder";
 import {
   currentProcess,
@@ -57,6 +57,8 @@ export async function recreateSandbox(deps: ServerDeps, paseo: PaseoApi, name: s
     binding: { key: state.key, name, claudeConfigDir: state.claudeConfigDir ?? join(paths.claudeConfigs, name) },
   });
   // Validate before destroying anything.
+  // Before the sandbox is removed: creating it again would be refused.
+  if (!spec.template) assertImageDownloadsAllowed(settings, `Recreating ${name} from sbx's image`);
   if (spec.template && !findTemplate(await listTemplates(paths), spec.template)) {
     throw new Error(`template ${spec.template} not found; pick another template for the repo`);
   }

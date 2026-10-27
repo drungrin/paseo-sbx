@@ -1,3 +1,4 @@
+import { DOWNLOAD_TERMS } from "./consent";
 import { useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import {
   SettingsAction,
@@ -17,6 +18,7 @@ import { useTemplates } from "./queries";
 
 interface Draft {
   enabledAgents: AgentId[];
+  allowImageDownloads: boolean;
   routeClaudeAgents: boolean;
   gsdPath: boolean;
   isolation: IsolationMode;
@@ -40,6 +42,7 @@ interface Draft {
 function toDraft(values: SandboxSettings): Draft {
   return {
     enabledAgents: values.enabledAgents,
+    allowImageDownloads: values.allowImageDownloads,
     routeClaudeAgents: values.routeClaudeAgents,
     gsdPath: values.gsdPath,
     isolation: values.isolation,
@@ -82,6 +85,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   return {
     ...base,
     enabledAgents: draft.enabledAgents,
+    allowImageDownloads: draft.allowImageDownloads,
     routeClaudeAgents: draft.routeClaudeAgents,
     gsdPath: draft.gsdPath,
     isolation: draft.isolation,
@@ -168,6 +172,17 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
               }
             />
           ))}
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Downloads">
+        <SettingsCard>
+          <SettingsSwitch
+            label="Allow downloading sbx images"
+            hint={DOWNLOAD_TERMS}
+            value={draft.allowImageDownloads}
+            onValueChange={update("allowImageDownloads")}
+          />
         </SettingsCard>
       </SettingsSection>
 

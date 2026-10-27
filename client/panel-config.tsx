@@ -1,3 +1,4 @@
+import { DownloadConsentPrompt, useDownloadConsent } from "./consent";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { MountSource } from "../shared/spec";
@@ -36,6 +37,7 @@ function RecreateCallout({
   detail?: string | null;
 }) {
   const action = useSandboxAction();
+  const consent = useDownloadConsent();
   const blocked = data.recreateBlockers.length > 0;
   return (
     <Section theme={theme} tone="warning" padding={16} gap={10}>
@@ -51,10 +53,13 @@ function RecreateCallout({
           confirmLabel="Confirm recreate"
           busy={action.isPending}
           disabled={blocked}
-          onConfirm={() => action.mutate({ name: data.name, action: "recreate" })}
+          onConfirm={() =>
+            consent.request(() => action.mutate({ name: data.name, action: "recreate" }), data.template.configured === null)
+          }
         />
         {blocked ? <Note theme={theme}>{`First: ${data.recreateBlockers.join("; ")}.`}</Note> : null}
       </Actions>
+      <DownloadConsentPrompt consent={consent} theme={theme} />
       {action.error ? (
         <Note theme={theme} tone="danger">
           {errorMessage(action.error)}
