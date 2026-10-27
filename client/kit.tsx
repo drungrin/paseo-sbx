@@ -611,17 +611,20 @@ export function SwitchRow({
   );
 }
 
-/** One choice of a list, ringed in the accent when selected. */
+/**
+ * One choice of a list, ringed in the accent when selected. `action` sits at its right edge but
+ * outside the choice itself, so it presses on its own and is not read as part of the radio.
+ */
 export function Choice({
   title,
   detail,
-  aside,
+  action,
   selected,
   onPress,
   theme,
-}: ThemeProps & { title: string; detail?: string | null; aside?: ReactNode; selected: boolean; onPress(): void }) {
+}: ThemeProps & { title: string; detail?: string | null; action?: ReactNode; selected: boolean; onPress(): void }) {
   const accent = toneColor(theme, "accent");
-  return (
+  const tile = (
     <Pressable
       accessibilityRole="radio"
       accessibilityLabel={title}
@@ -632,7 +635,9 @@ export function Choice({
         alignItems: "center",
         gap: 12,
         paddingVertical: 12,
-        paddingHorizontal: 14,
+        paddingLeft: 14,
+        // Room for the action, armed included ("Confirm remove").
+        paddingRight: action ? 136 : 14,
         borderRadius: 12,
         borderWidth: 1.5,
         borderColor: selected ? accent : "transparent",
@@ -662,8 +667,14 @@ export function Choice({
         </Text>
         {detail ? <Text style={text(theme, 12, "400", true)}>{detail}</Text> : null}
       </View>
-      {aside}
     </Pressable>
+  );
+  if (!action) return tile;
+  return (
+    <View>
+      {tile}
+      <View style={{ position: "absolute", top: 0, bottom: 0, right: 12, justifyContent: "center" }}>{action}</View>
+    </View>
   );
 }
 

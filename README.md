@@ -14,7 +14,7 @@ A panel beside each workspace, in tabs. Each tab's badge counts what it holds, o
 
 - **Overview**: the sandbox's status, memory in use against its limit, CPUs and template, with **Open shell**, **Stop**, **Recreate** and **Remove**. Below is what needs you, each item opening the tab that fixes it: a template, resources or mounts that changed since the sandbox was created, a GSD Path member without a checkout, a variable without a value, a port that could not be published, a failed operation. Then the agents running in the sandbox, with **Open** and **Archive**.
 - **Services**: the ports listening in the VM and the ones published on the host, with the host address of each. Publish a port on `127.0.0.1` or every host address, on a port you pick or a free one, and keep it published for every sandbox of the repository.
-- **Template**: which template the repository's sandboxes start from, and a guided preparation: a shell in a clean sandbox to install your tools, then save it as a template.
+- **Template**: which template the repository's sandboxes start from, with **Remove** on old versions nothing uses, and a guided preparation: a shell in a clean sandbox to install your tools, then save it as a template.
 - **Resources**: memory and CPUs for the repository's sandboxes.
 - **Mounts**: every host folder the sandbox sees, where it comes from and whether it waits for a recreation; the repository's own mounts, added one at a time; and the GSD Path members.
 - **Variables**: the host variables forwarded to sessions, whether each has a value, and the repository's own.
@@ -32,7 +32,7 @@ Opened from the sidebar, for every sandbox at once.
 - **Overview**: the memory the VMs hold against the host's, with available RAM, swap and memory pressure, and an alert past the thresholds you set. Then what needs you and the agents that keep each VM running, biggest first, with **Archive**.
 - **Sandboxes**: every VM the plugin created, grouped into workspaces, template preparations and agent catalogs, with **Stop** and **Remove**.
 - **Agents**: Claude and Codex, each with its CLI version, catalog sandbox, provider and login, the command that stores its login, and **Configure** or **Update**.
-- **Templates**: the saved templates, their size and the repositories that use them.
+- **Templates**: the saved templates, their size, the repositories and sandboxes that use them, and **Remove** for the ones nothing uses.
 
 | Overview | Sandboxes |
 | --- | --- |

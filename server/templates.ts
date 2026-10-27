@@ -8,7 +8,7 @@ import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
 import { SbxError, assertSandboxName, listSandboxes, removeSandbox, runSbx, runSbxOk, stopSandboxLocked } from "./sbx";
 import { templateFor } from "./spec-builder";
-import { liveLeases, writeSandboxState } from "./state";
+import { liveLeases, readSandboxState, writeSandboxState } from "./state";
 
 export interface TemplateInfo {
   /** `repository:tag` as `sbx template ls` reports it. */
@@ -60,6 +60,20 @@ export function templateUsers(settings: SandboxSettings, ref: string): string[] 
 }
 
 /**
+ * Existing sandboxes created from a template: by the image ID they recorded, else (preparation
+ * sandboxes, older records) by its reference.
+ */
+export function templateSandboxes(paths: PluginPaths, sandboxNames: readonly string[], template: TemplateInfo): string[] {
+  return sandboxNames.filter((name) => {
+    const state = readSandboxState(paths, name);
+    if (!state?.template) return false;
+    return state.templateImageId
+      ? state.templateImageId === template.id
+      : normalizeTemplateRef(state.template) === template.ref;
+  });
+}
+
+/**
  * Saves the sandbox's filesystem as a template in the Paseo instance; returns its reference.
  * sbx saves only a stopped sandbox (it asks to stop a running one, and without a terminal that
  * question fails), so the sandbox is stopped first, shutting its Docker down cleanly. Stopping
@@ -88,9 +102,21 @@ export async function saveTemplate(paths: PluginPaths, name: string, tag: string
 
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
+/**
+ * Removes a template nothing uses: no setting picks it and no existing sandbox was created from
+ * it. What sbx does to a sandbox whose template is gone is unverified, so the plugin does not try.
+ */
 export async function removeTemplate(paths: PluginPaths, settings: SandboxSettings, ref: string): Promise<void> {
   const users = templateUsers(settings, ref);
   if (users.length > 0) throw new Error(`${ref} is in use (${users.join(", ")}); pick another template there first`);
+  const template = findTemplate(await listTemplates(paths), ref);
+  if (template) {
+    const sandboxes = templateSandboxes(paths, (await listSandboxes(paths)).map((sandbox) => sandbox.name), template);
+    if (sandboxes.length > 0) {
+      const one = sandboxes.length === 1;
+      throw new Error(`${ref} is what ${sandboxes.join(", ")} ${one ? "was" : "were"} created from; recreate or remove ${one ? "it" : "them"} first`);
+    }
+  }
   await runSbxOk(paths, ["template", "rm", "--force", ref], `sbx template rm ${ref}`);
 }
 

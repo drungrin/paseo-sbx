@@ -258,6 +258,8 @@ const templateSchema = z.object({
   base: z.boolean(),
   /** "default" and repo keys whose settings select it. */
   users: z.array(z.string()),
+  /** Existing sandboxes created from it. Removing it needs both lists empty. */
+  sandboxes: z.array(z.string()),
 });
 export type TemplateSummary = z.infer<typeof templateSchema>;
 

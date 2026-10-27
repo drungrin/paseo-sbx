@@ -41,6 +41,7 @@ import {
   listTemplates,
   removeTemplate,
   saveTemplate,
+  templateSandboxes,
   templateUsers,
   type TemplateInfo,
 } from "./templates";
@@ -262,8 +263,15 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
 
   server.handle(listTemplatesRpc, async () => {
     const settings = await deps.readSettings();
-    const templates = await listTemplates(paths);
-    return { templates: templates.map((template) => ({ ...template, users: templateUsers(settings, template.ref) })) };
+    const [templates, sandboxes] = await Promise.all([listTemplates(paths), listSandboxes(paths)]);
+    const names = sandboxes.map((sandbox) => sandbox.name);
+    return {
+      templates: templates.map((template) => ({
+        ...template,
+        users: templateUsers(settings, template.ref),
+        sandboxes: templateSandboxes(paths, names, template),
+      })),
+    };
   });
 
   server.handle(saveTemplateRpc, ({ name, tag }) =>

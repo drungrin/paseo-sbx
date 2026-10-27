@@ -28,6 +28,7 @@ import {
   useAwaitOperation,
   useInvalidateAll,
   useOpenTerminal,
+  useRemoveTemplate,
   useRepoSettings,
   useSandboxAction,
   useSaveTemplate,
@@ -46,37 +47,57 @@ function defaultTag(repoName: string): string {
   return `${slug}:${stamp}`;
 }
 
-/** Who picks a template: the default for every repository, and repositories of their own. */
-function usage(users: readonly string[]): string {
-  const repos = users.filter((user) => user !== "default").length;
+type TemplateSummary = NonNullable<ReturnType<typeof useTemplates>["data"]>["templates"][number];
+
+/** What keeps a template: settings that pick it, and sandboxes created from it. */
+function usage(template: TemplateSummary, data: PanelTabProps["data"]): string {
+  const otherRepos = template.users.filter((user) => user !== "default" && user !== data.repoKey).length;
+  const otherSandboxes = template.sandboxes.filter((name) => name !== data.name).length;
   const parts = [
-    users.includes("default") ? "the default" : null,
-    repos > 0 ? `used by ${plural(repos, "repository", "repositories")}` : null,
+    template.users.includes(data.repoKey) ? "used by this repository" : null,
+    template.users.includes("default") ? "the default" : null,
+    otherRepos > 0 ? `used by ${plural(otherRepos, "other repository", "other repositories")}` : null,
+    template.sandboxes.includes(data.name) ? "this sandbox runs it" : null,
+    otherSandboxes > 0
+      ? `${plural(otherSandboxes, "other sandbox", "other sandboxes")} ${otherSandboxes === 1 ? "runs" : "run"} it`
+      : null,
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(", ") : "unused";
+  return parts.length > 0 ? parts.join(" · ") : "unused";
 }
+
+/** Nothing picks it and no sandbox runs it: the server removes only those. */
+const removable = (template: TemplateSummary) => template.users.length === 0 && template.sandboxes.length === 0;
 
 export function TemplateTab({ data, theme, compact, header, workspaceId, directory }: PanelTabProps) {
   const templates = useTemplates();
+  const remove = useRemoveTemplate();
   const { repo, save, settings } = useRepoSettings(data.repoKey);
   const [selectError, setSelectError] = useState<string | null>(null);
   const globalTemplate = settings.status === "ready" ? settings.values.template : "";
   const custom = (templates.data?.templates ?? []).filter((template) => !template.base);
-  const choices = [
+  const choices: { value: string; title: string; detail: string; removable: boolean }[] = [
     {
       value: "",
       title: globalTemplate ? `Default · ${shortRef(globalTemplate)}` : "Default · sbx image",
       detail: "What the plugin settings pick for every repository",
+      removable: false,
     },
     ...custom.map((template) => ({
       value: template.ref,
       title: shortRef(template.ref),
-      detail: [formatBytes(template.sizeBytes), usage(template.users)].join(" · "),
+      detail: [formatBytes(template.sizeBytes), usage(template, data)].join(" · "),
+      removable: removable(template),
     })),
   ];
   if (repo?.template && !choices.some((choice) => choice.value === repo.template)) {
-    choices.push({ value: repo.template, title: shortRef(repo.template), detail: "Missing: sbx no longer has it" });
+    choices.push({
+      value: repo.template,
+      title: shortRef(repo.template),
+      detail: "Missing: sbx no longer has it",
+      removable: false,
+    });
   }
+  const keptBySandbox = custom.some((template) => template.users.length === 0 && template.sandboxes.length > 0);
 
   return (
     <Frame
@@ -89,6 +110,7 @@ export function TemplateTab({ data, theme, compact, header, workspaceId, directo
         "A template is a saved VM filesystem: the tools and CLIs your agents need. It carries the CLIs of the agents it was prepared with, so a workspace running Claude and Codex needs a template with both.",
         "Templates do not include the images of the VM's own Docker: each new sandbox pulls them again.",
         "Every worktree of the repository shares its template.",
+        "Remove appears on templates nothing uses: no setting picks them and no sandbox was created from them.",
       ]}
     >
       <Section theme={theme} overline="Every worktree of the repository" title="Template for this repository">
@@ -118,6 +140,19 @@ export function TemplateTab({ data, theme, compact, header, workspaceId, directo
                 title={choice.title}
                 detail={choice.detail}
                 selected={repo.template === choice.value}
+                action={
+                  choice.removable ? (
+                    <ConfirmButton
+                      theme={theme}
+                      small
+                      label="Remove"
+                      confirmLabel="Confirm remove"
+                      busy={remove.isPending && remove.variables === choice.value}
+                      disabled={remove.isPending}
+                      onConfirm={() => remove.mutate(choice.value)}
+                    />
+                  ) : null
+                }
                 onPress={() => {
                   if (repo.template === choice.value) return;
                   setSelectError(null);
@@ -127,9 +162,19 @@ export function TemplateTab({ data, theme, compact, header, workspaceId, directo
             ))}
           </View>
         ) : null}
+        {keptBySandbox ? (
+          <Note theme={theme}>
+            A template a sandbox was created from can be removed once that sandbox is recreated or removed.
+          </Note>
+        ) : null}
         {templates.error ? (
           <Note theme={theme} tone="danger">
             {errorMessage(templates.error)}
+          </Note>
+        ) : null}
+        {remove.error ? (
+          <Note theme={theme} tone="danger">
+            {errorMessage(remove.error)}
           </Note>
         ) : null}
         {selectError ? (

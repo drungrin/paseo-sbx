@@ -236,7 +236,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
               {...header}
               notes={[
                 "Prepare a template from a workspace's Sandbox panel: it opens a shell in a clean sandbox, then saves it.",
-                "A template in use by the default or by a repository cannot be removed: pick another first.",
+                "Remove appears on templates nothing uses. One the default or a repository picks needs another picked first; one a sandbox was created from needs that sandbox recreated or removed.",
               ]}
             >
               <TemplateList
@@ -843,7 +843,7 @@ function TemplateList({
           theme={theme}
           label="Templates"
           value={String(templates.length)}
-          detail={`${templates.filter((template) => template.users.length > 0).length} in use`}
+          detail={`${templates.filter((template) => template.users.length > 0 || template.sandboxes.length > 0).length} in use`}
         />
         <Stat theme={theme} label="Total size" value={formatBytes(total)} detail="Layers they share count in each" />
       </Figures>
@@ -860,30 +860,36 @@ function TemplateList({
               detail={
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
                   <Pill theme={theme} label={formatBytes(template.sizeBytes)} />
-                  {template.users.length === 0 ? (
-                    <Pill theme={theme} label="Unused" />
-                  ) : (
-                    template.users.map((user) => (
-                      <Pill
-                        key={user}
-                        theme={theme}
-                        tone="accent"
-                        label={user === "default" ? "Default" : baseName(repoPath(user))}
-                      />
-                    ))
-                  )}
+                  {template.users.map((user) => (
+                    <Pill
+                      key={user}
+                      theme={theme}
+                      tone="accent"
+                      label={user === "default" ? "Default" : baseName(repoPath(user))}
+                    />
+                  ))}
+                  {template.sandboxes.length > 0 ? (
+                    <Pill
+                      theme={theme}
+                      label={`${plural(template.sandboxes.length, "sandbox", "sandboxes")} ${template.sandboxes.length === 1 ? "runs" : "run"} it`}
+                    />
+                  ) : null}
+                  {template.users.length === 0 && template.sandboxes.length === 0 ? <Pill theme={theme} label="Unused" /> : null}
                 </View>
               }
               aside={
-                <ConfirmButton
-                  theme={theme}
-                  small
-                  label="Remove"
-                  confirmLabel="Confirm remove"
-                  busy={remove.isPending && remove.variables === template.ref}
-                  disabled={remove.isPending || template.users.length > 0}
-                  onConfirm={() => remove.mutate(template.ref)}
-                />
+                // Only what nothing uses: no setting picks it and no sandbox runs it.
+                template.users.length === 0 && template.sandboxes.length === 0 ? (
+                  <ConfirmButton
+                    theme={theme}
+                    small
+                    label="Remove"
+                    confirmLabel="Confirm remove"
+                    busy={remove.isPending && remove.variables === template.ref}
+                    disabled={remove.isPending}
+                    onConfirm={() => remove.mutate(template.ref)}
+                  />
+                ) : null
               }
             />
           ))}

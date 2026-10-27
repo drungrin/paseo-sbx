@@ -12,7 +12,7 @@ import { recreateSandbox } from "../server/recreate";
 import { publishPort, readListeners, unpublishPort } from "../server/ports";
 import { listSandboxes, prepareSandbox, stopSandbox } from "../server/sbx";
 import { buildSpec } from "../server/spec-builder";
-import { processStart, readSandboxState } from "../server/state";
+import { processStart, readSandboxState, writeSandboxState } from "../server/state";
 import { ensureTemplatePrep, finishTemplatePrep, removeTemplate, saveTemplate } from "../server/templates";
 import { installFakeSbx, type FakeSbx } from "./fake-sbx";
 
@@ -238,6 +238,31 @@ describe("templates", () => {
     await expect(removeTemplate(paths, inUse, "docker.io/library/app:v1")).rejects.toThrow("is in use (git:/r/.git)");
     await removeTemplate(paths, sandboxSettingsSchema.parse({}), "docker.io/library/app:v1");
     expect(fake.calls().some((call) => call.args.join(" ") === "template rm --force docker.io/library/app:v1")).toBe(true);
+  });
+
+  it("will not remove a template an existing sandbox was created from", async () => {
+    const working = "paseo-app-0000000a";
+    const prep = "paseo-tpl-app-0000000b";
+    fake.setState({
+      sandboxes: [working, prep],
+      templates: [
+        { id: "abc", repository: "docker.io/library/app", tag: "v1" },
+        { id: "def", repository: "docker.io/library/app", tag: "v2" },
+        { id: "fed", repository: "docker.io/library/app", tag: "v0" },
+      ],
+    });
+    // The working sandbox recorded its image ID; the preparation sandbox only the reference.
+    writeSandboxState(paths, working, { template: "docker.io/library/app:v1", templateImageId: "abc" });
+    writeSandboxState(paths, prep, { kind: "template-prep", template: "app:v2" });
+    // A record left behind by a sandbox that is gone does not count.
+    writeSandboxState(paths, "paseo-app-0000000c", { template: "docker.io/library/app:v0", templateImageId: "fed" });
+    const none = sandboxSettingsSchema.parse({});
+
+    await expect(removeTemplate(paths, none, "docker.io/library/app:v1")).rejects.toThrow(`is what ${working} was created from`);
+    await expect(removeTemplate(paths, none, "app:v2")).rejects.toThrow(`is what ${prep} was created from`);
+    expect(fake.calls().some((call) => call.args[1] === "rm")).toBe(false);
+    await removeTemplate(paths, none, "docker.io/library/app:v0");
+    expect(fake.calls().some((call) => call.args.join(" ") === "template rm --force docker.io/library/app:v0")).toBe(true);
   });
 
   it("prepares a clean sandbox per repository, reuses it, and removes it once saved", async () => {
