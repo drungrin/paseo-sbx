@@ -6,11 +6,13 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join, relative } from "node:path";
+import { AGENTS, type AgentId } from "../shared/agents";
 import type { SandboxSettings } from "../shared/settings";
 import {
   SPEC_VERSION,
@@ -32,6 +34,7 @@ import { canonical, git } from "./git";
 import { gsdPathMembers, usesGsdPath, type GsdPathMember } from "./gsd-path";
 import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
+import { secretsFor, type StoredSecret } from "./sbx";
 import { readSandboxState } from "./state";
 
 export interface SpecInput {
@@ -46,6 +49,12 @@ export interface SpecInput {
   hostMemoryBytes?: number;
   /** Creates and links the sandbox's Claude config dir. Off for read-only callers. */
   prepare?: boolean;
+  /** The agent the session runs; the plugin's own operations prepare Claude's. */
+  agent?: AgentId;
+  /** Port of Paseo's daemon, whose MCP server sessions reach on the host's loopback. */
+  daemonPort?: number | null;
+  /** sbx service secrets (`sbx secret ls`); those applying to the sandbox matter. */
+  secrets?: readonly StoredSecret[];
 }
 
 export interface SourcedMount extends MountEntry {
@@ -87,6 +96,24 @@ export function envFilePath(settings: SandboxSettings, paths: PluginPaths, home 
   const file = settings.envFile.trim();
   if (!file) return paths.defaultEnvFile;
   return file === "~" || file.startsWith("~/") ? join(home, file.slice(1)) : file;
+}
+
+const CLAUDE_LOGIN_VARIABLES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
+
+/**
+ * Whether Claude signs in on its own: a key, a gateway token or a cloud provider in the daemon's
+ * environment or your Claude settings, or an `apiKeyHelper`. Unreadable settings count as yes,
+ * so the sbx secret never replaces a login that works.
+ */
+function hasOwnClaudeLogin(env: NodeJS.ProcessEnv, paths: PluginPaths): boolean {
+  if (CLAUDE_LOGIN_VARIABLES.some((name) => env[name])) return true;
+  let settings: { env?: Record<string, unknown>; apiKeyHelper?: unknown };
+  try {
+    settings = JSON.parse(readFileSync(join(paths.hostClaudeDir, "settings.json"), "utf8"));
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ENOENT");
+  }
+  return Boolean(settings.apiKeyHelper) || CLAUDE_LOGIN_VARIABLES.some((name) => settings.env?.[name]);
 }
 
 /** Appends an entry to git's config-by-environment list (`GIT_CONFIG_COUNT`, `_KEY_<n>`, `_VALUE_<n>`). */
@@ -206,7 +233,16 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   }
   const commonDir = await gitCommonDir(input.cwd);
   if (commonDir && !isWithin(commonDir, directory)) requested.push({ path: commonDir, readOnly: false, source: "git" });
-  if (settings.claudeShared.length > 0) requested.push({ path: paths.hostClaudeDir, readOnly: true, source: "claude" });
+  // Each shared Claude item on its own, never the whole config dir with its credentials. The links
+  // in the sandbox's config dir point at these paths; a linked item also needs its target.
+  for (const item of settings.claudeShared) {
+    const shared = join(paths.hostClaudeDir, item);
+    if (!existsSync(shared)) continue;
+    requested.push({ path: shared, readOnly: true, source: "claude" });
+    const target = realpathSync(shared);
+    if (target !== shared) requested.push({ path: target, readOnly: true, source: "claude" });
+  }
+  requested.push({ path: paths.homesDir, readOnly: false, source: "agents" });
   const sourced = mergeMounts(requested).filter((mount) => !isWithin(mount.path, directory));
   const mounts = sourced.map(formatMount);
   const homeMounts: HomeMount[] = sourced
@@ -231,6 +267,12 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   }
   // GSD Path places new worktrees under `~/.gsd-path/projects`, which in the guest is a path your
   // git cannot reach from the host: keep them at the host's.
+  const agent = AGENTS[input.agent ?? "claude"];
+  const secrets = secretsFor(input.secrets ?? [], identity.name);
+  if (agent.id === "claude" && secrets.includes(agent.secretService) && !hasOwnClaudeLogin(env, paths)) {
+    // The sbx proxy swaps this marker for the stored secret.
+    forwarded.ANTHROPIC_API_KEY = "proxy-managed";
+  }
   if (gsdPath?.enabled && forwarded.GSD_PATH_WORKTREE_ROOT === undefined) {
     forwarded.GSD_PATH_WORKTREE_ROOT = env.GSD_PATH_WORKTREE_ROOT || join(home, ".gsd-path", "projects");
   }
@@ -242,6 +284,12 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
 
   const spec: SandboxSpec = {
     version: SPEC_VERSION,
+    agent: agent.id,
+    binary: agent.binary,
+    kit: agent.kit,
+    agentCwd: input.cwd,
+    agentHome: agent.sharedHome ? { env: agent.sharedHome.env, path: join(paths.homesDir, agent.sharedHome.dir) } : null,
+    homesDir: paths.homesDir,
     name: identity.name,
     key: identity.key,
     repoKey,
@@ -258,7 +306,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     cpus: repo?.cpus ?? settings.cpus,
     dockerDisk: settings.dockerDiskGiB > 0 ? `${settings.dockerDiskGiB}g` : null,
     networkAllow: settings.networkAllow,
-    forwardPorts: settings.forwardPorts,
+    forwardPorts: input.daemonPort ? [...new Set([...settings.forwardPorts, input.daemonPort])] : settings.forwardPorts,
     autoPublish: repo?.autoPublish ?? [],
     env: forwarded,
     claudeConfigDir,

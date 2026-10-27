@@ -13,14 +13,31 @@ export interface SbxResult {
   stderr: string;
 }
 
+/** Same rule as the wrapper's: credentials in the daemon's environment never reach an sbx process. */
+const CREDENTIAL_NAME = /(TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|ACCESS_KEY|PRIVATE_KEY)/i;
+
+/** The daemon's environment without credentials, pointed at the Paseo-only instance. */
+export function sbxEnv(paths: PluginPaths, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!CREDENTIAL_NAME.test(name)) env[name] = value;
+  }
+  return { ...env, ...extra, XDG_STATE_HOME: paths.stateHome };
+}
+
 /** Runs the sbx CLI against the Paseo-only instance. Never throws for a non-zero exit. */
-export function runSbx(paths: PluginPaths, args: string[], timeoutMs = 60_000): Promise<SbxResult> {
+export function runSbx(
+  paths: PluginPaths,
+  args: string[],
+  timeoutMs = 60_000,
+  extraEnv: NodeJS.ProcessEnv = {},
+): Promise<SbxResult> {
   return new Promise((resolve) => {
     execFile(
       "sbx",
       args,
       {
-        env: { ...process.env, XDG_STATE_HOME: paths.stateHome },
+        env: sbxEnv(paths, extraEnv),
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
         encoding: "utf8",
@@ -101,7 +118,11 @@ export async function listSandboxes(paths: PluginPaths): Promise<SandboxSummary[
       status: entry.status ?? "unknown",
       workspaces: entry.workspaces ?? [],
       memory: entry.memory ?? null,
-      kind: state?.kind === "template-prep" ? ("template-prep" as const) : ("working" as const),
+      kind: state?.kind === "template-prep"
+        ? ("template-prep" as const)
+        : entry.name.startsWith("paseo-catalog-")
+          ? ("catalog" as const)
+          : ("working" as const),
       repoKey: state?.repoKey ?? null,
       template: state?.template ?? null,
     };
@@ -208,4 +229,32 @@ export function shellCommand(
     command: "env",
     args: [`XDG_STATE_HOME=${paths.stateHome}`, "sbx", "exec", "-it", ...historyArgs, name, ...shell],
   };
+}
+
+export interface StoredSecret {
+  /** "global", or the name of the sandbox it is scoped to. */
+  scope: string;
+  service: string;
+}
+
+let secretsCache: { at: number; secrets: StoredSecret[] } | null = null;
+
+/**
+ * Service secrets the sbx proxy signs in with. sbx keeps them per user, shared by every instance.
+ * Cached briefly: session openings read it.
+ */
+export async function storedSecrets(paths: PluginPaths, maxAgeMs = 30_000): Promise<StoredSecret[]> {
+  if (secretsCache && Date.now() - secretsCache.at < maxAgeMs) return secretsCache.secrets;
+  const stdout = await runSbxOk(paths, ["secret", "ls", "--json"], "sbx secret ls");
+  const parsed = JSON.parse(stdout || "{}") as { secrets?: { scope?: string; type?: string; name?: string }[] };
+  const secrets = (parsed.secrets ?? [])
+    .filter((entry) => entry.type === "service" && typeof entry.name === "string")
+    .map((entry) => ({ scope: entry.scope ?? "global", service: entry.name as string }));
+  secretsCache = { at: Date.now(), secrets };
+  return secrets;
+}
+
+/** Services with a secret that applies to the sandbox: global ones and those scoped to it. */
+export function secretsFor(secrets: readonly StoredSecret[], sandbox: string): string[] {
+  return [...new Set(secrets.filter((s) => s.scope === "global" || s.scope === sandbox).map((s) => s.service))];
 }

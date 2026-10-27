@@ -1,10 +1,10 @@
 import { useSettings, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Text, View } from "react-native";
-import type { SandboxSummary, TemplateSummary } from "../shared/rpc";
+import type { AgentStatus, SandboxSummary, TemplateSummary } from "../shared/rpc";
 import { sandboxSettings } from "../shared/settings";
 import {
   useArchiveAgent,
-  useEnsureProvider,
+  useConfigureAgent,
   useInvalidateAll,
   useMemory,
   useRemoveTemplate,
@@ -37,7 +37,6 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
   const styles = useStyles(theme, layout.compact);
   const status = useStatus();
   const sandboxes = useSandboxes();
-  const ensureProvider = useEnsureProvider();
 
   return (
     <Screen styles={styles}>
@@ -52,26 +51,6 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
             <Row styles={styles} label="Paseo sandbox daemon">
               {status.data.sbx.daemon}
             </Row>
-            <Row styles={styles} label="Provider claude-sbx">
-              <View style={styles.actions}>
-                <Text style={styles.value}>
-                  {status.data.provider.current
-                    ? "configured"
-                    : status.data.provider.configured
-                      ? "outdated"
-                      : "not configured"}
-                </Text>
-                {status.data.provider.current ? null : (
-                  <Button
-                    styles={styles}
-                    label="Configure"
-                    primary
-                    disabled={ensureProvider.isPending}
-                    onPress={() => ensureProvider.mutate()}
-                  />
-                )}
-              </View>
-            </Row>
             <Row styles={styles} label="Default memory per sandbox">
               {`${formatMiB(status.data.defaultMemoryMiB)} of ${formatMiB(status.data.hostMemoryMiB)}`}
             </Row>
@@ -81,12 +60,13 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
           </Card>
         ) : null}
         {status.data?.sbx.error ? <Text style={styles.error}>{status.data.sbx.error}</Text> : null}
-        {ensureProvider.error ? <Text style={styles.error}>{errorMessage(ensureProvider.error)}</Text> : null}
         <View style={styles.actions}>
           <Button styles={styles} label="Settings" onPress={openSettings} />
           <Button styles={styles} label="Refresh" onPress={() => void Promise.all([status.refetch(), sandboxes.refetch()])} />
         </View>
       </Section>
+
+      {status.data ? <AgentsSection styles={styles} agents={status.data.agents} stateHome={status.data.stateHome} /> : null}
 
       <MemorySection styles={styles} />
 
@@ -95,7 +75,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
         {sandboxes.error ? <Text style={styles.error}>{errorMessage(sandboxes.error)}</Text> : null}
         {sandboxes.data && sandboxes.data.sandboxes.length === 0 ? (
           <Text style={styles.muted}>
-            No sandboxes yet. One is created the first time a claude-sbx agent starts in a workspace.
+            No sandboxes yet. One is created the first time a sandboxed agent starts in a workspace.
           </Text>
         ) : null}
         {sandboxes.data?.sandboxes.map((sandbox) => (
@@ -272,7 +252,11 @@ function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSumm
   return (
     <Card styles={styles}>
       <Row styles={styles} label={sandbox.name} first>
-        {sandbox.kind === "template-prep" ? `${sandbox.status} · template preparation` : sandbox.status}
+        {sandbox.kind === "template-prep"
+          ? `${sandbox.status} · template preparation`
+          : sandbox.kind === "catalog"
+            ? `${sandbox.status} · agent catalog`
+            : sandbox.status}
       </Row>
       {sandbox.template ? (
         <Row styles={styles} label="Template">
@@ -307,5 +291,72 @@ function SandboxCard({ styles, sandbox }: { styles: Styles; sandbox: SandboxSumm
       ) : null}
       {action.error ? <Text style={[styles.error, { padding: 12 }]}>{errorMessage(action.error)}</Text> : null}
     </Card>
+  );
+}
+
+function agentNote(agent: AgentStatus): string {
+  const provider = !agent.enabled
+    ? "off"
+    : agent.provider.current
+      ? "provider ready"
+      : agent.provider.configured
+        ? "provider outdated"
+        : "provider not configured";
+  const catalog = agent.catalog.cliVersion
+    ? `${agent.catalog.cliVersion}${agent.catalog.exists ? "" : " (catalog sandbox missing)"}`
+    : "no catalog sandbox";
+  return `${provider} · ${catalog}`;
+}
+
+function loginNote(agent: AgentStatus, stateHome: string): string {
+  const store = `XDG_STATE_HOME=${stateHome} sbx secret set ${agent.login.service}`;
+  // Claude gets the secret's marker at every session; other agents take it from their kit at Update.
+  if (agent.id === "claude") {
+    return agent.login.stored
+      ? "Signs in through your Claude settings when they have a login, else through the sbx anthropic secret."
+      : `Signs in through your Claude settings. Without a login there, store the sbx anthropic secret: ${store}`;
+  }
+  return agent.login.stored
+    ? `Signs in through the sbx ${agent.login.service} secret.`
+    : `No sbx ${agent.login.service} secret. Store one with ${store}, then press Update.`;
+}
+
+function AgentsSection({ styles, agents, stateHome }: { styles: Styles; agents: AgentStatus[]; stateHome: string }) {
+  const configure = useConfigureAgent();
+  const shown = agents.filter((agent) => agent.enabled || agent.provider.configured);
+  return (
+    <Section styles={styles} title="Agents">
+      <Card styles={styles}>
+        {shown.map((agent, index) => {
+          const ready = agent.provider.current && agent.catalog.exists && agent.catalog.cliVersion !== null;
+          return (
+            <View key={agent.id} style={[styles.row, styles.stackedRow, index === 0 ? styles.firstRow : null]}>
+              <Text style={styles.label}>{agent.label}</Text>
+              <Text style={styles.muted}>{agentNote(agent)}</Text>
+              <Text style={styles.muted}>{loginNote(agent, stateHome)}</Text>
+              {agent.enabled ? (
+                <View style={styles.actions}>
+                  <Button
+                    styles={styles}
+                    label={ready ? "Update" : "Configure"}
+                    primary={!ready}
+                    disabled={configure.isPending}
+                    onPress={() => configure.mutate({ agent: agent.id, update: ready })}
+                  />
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+      </Card>
+      {configure.isPending ? (
+        <Text style={styles.muted}>Setting up the catalog sandbox; the first time downloads sbx's kit for the agent.</Text>
+      ) : null}
+      {configure.error ? <Text style={styles.error}>{errorMessage(configure.error)}</Text> : null}
+      <Text style={styles.muted}>
+        Sessions run the CLI of the workspace's template. Each agent's catalog sandbox answers Paseo's version and model
+        queries; Update recreates it from sbx's latest kit.
+      </Text>
+    </Section>
   );
 }

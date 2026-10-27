@@ -55,7 +55,14 @@ describe("buildSpec", () => {
     expect(spec.workspace).toBe(repo);
     expect(spec.key).toBe("workspace:wks_1");
     expect(spec.memory).toBe("3072m");
-    expect(spec.mounts).toEqual([`${home}/tools:ro`, "/does-not-matter", `${hostClaude}:ro`]);
+    // The shared Claude items one by one, never the config dir with its credentials.
+    expect(spec.mounts).toEqual([
+      `${home}/tools:ro`,
+      "/does-not-matter",
+      `${hostClaude}/settings.json:ro`,
+      `${hostClaude}/skills:ro`,
+      paths.homesDir,
+    ]);
     expect(spec.claudeConfigDir).toBe(join(paths.claudeConfigs, spec.name));
     expect(readlinkSync(join(spec.claudeConfigDir, "settings.json"))).toBe(join(hostClaude, "settings.json"));
     expect(lstatSync(join(spec.claudeConfigDir, "skills")).isSymbolicLink()).toBe(true);
@@ -72,7 +79,7 @@ describe("buildSpec", () => {
 
     expect(spec.workspace).toBe(worktree);
     expect(spec.key).toBe(`directory:${worktree}`);
-    expect(spec.mounts).toEqual([join(repo, ".git")]);
+    expect(spec.mounts).toEqual([join(repo, ".git"), paths.homesDir]);
   });
 
   it("forwards configured variables from the env file first, then the daemon environment", async () => {
@@ -192,6 +199,48 @@ describe("buildSpec resources and git", () => {
   });
 });
 
+describe("buildSpec for agents", () => {
+  it("gives Codex its shared home and the daemon's port", async () => {
+    const { home, repo, env, paths } = setup();
+    const settings = sandboxSettingsSchema.parse({ forwardPorts: [5000] });
+    const { spec } = await buildSpec({ settings, workspaceId: null, cwd: join(repo, "src"), paths, env, home, agent: "codex", daemonPort: 6767 });
+    expect(spec.agent).toBe("codex");
+    expect(spec.binary).toBe("codex");
+    expect(spec.agentCwd).toBe(join(repo, "src"));
+    expect(spec.agentHome).toEqual({ env: "CODEX_HOME", path: join(paths.homesDir, "codex") });
+    expect(spec.forwardPorts).toEqual([5000, 6767]);
+    expect(spec.mounts).toContain(paths.homesDir);
+  });
+
+  it("signs Claude in through the sbx secret only when nothing else signs it in", async () => {
+    const { home, hostClaude, repo, env, paths } = setup();
+    const settings = sandboxSettingsSchema.parse({ githubHttps: false });
+    const anthropic = [{ scope: "global", service: "anthropic" }];
+    const withSecret = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home, secrets: anthropic });
+    expect(withSecret.spec.env).toEqual({ ANTHROPIC_API_KEY: "proxy-managed" });
+    const none = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home, secrets: [] });
+    expect(none.spec.env).toEqual({});
+
+    writeFileSync(join(hostClaude, "settings.json"), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "t" } }));
+    const gateway = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home, secrets: anthropic });
+    expect(gateway.spec.env).toEqual({});
+    writeFileSync(join(hostClaude, "settings.json"), "{ not json");
+    const unreadable = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home, secrets: anthropic });
+    expect(unreadable.spec.env).toEqual({});
+    writeFileSync(join(hostClaude, "settings.json"), "{}");
+    const bedrock = await buildSpec({
+      settings,
+      workspaceId: null,
+      cwd: repo,
+      paths,
+      env: { ...env, CLAUDE_CODE_USE_BEDROCK: "1" },
+      home,
+      secrets: anthropic,
+    });
+    expect(bedrock.spec.env).toEqual({});
+  });
+});
+
 describe("buildSpec for GSD Path", () => {
   function coordinator(home: string, repo: string) {
     const member = join(home, "projects", "member");
@@ -239,7 +288,9 @@ describe("buildSpec for GSD Path", () => {
       memberWorktree,
       join(member, ".git"),
       "/nowhere/gone",
-      `${hostClaude}:ro`,
+      `${hostClaude}/settings.json:ro`,
+      `${hostClaude}/skills:ro`,
+      paths.homesDir,
     ]);
     expect(built.mounts.map((mount) => mount.source)).toEqual([
       "settings",
@@ -250,6 +301,8 @@ describe("buildSpec for GSD Path", () => {
       "git",
       "member",
       "claude",
+      "claude",
+      "agents",
     ]);
     // Only what you chose under your home: checkouts and Claude's config are reached by path.
     expect(built.spec.homeMounts).toEqual([
@@ -272,7 +325,7 @@ describe("buildSpec for GSD Path", () => {
     const { member } = coordinator(home, repo);
     const settings = sandboxSettingsSchema.parse({ gsdPath: false, claudeShared: [] });
     const built = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
-    expect(built.spec.mounts).toEqual([]);
+    expect(built.spec.mounts).toEqual([paths.homesDir]);
     expect(built.spec.homeMounts).toEqual([]);
     expect(built.spec.env.GSD_PATH_WORKTREE_ROOT).toBeUndefined();
     expect(built.gsdPath?.enabled).toBe(false);

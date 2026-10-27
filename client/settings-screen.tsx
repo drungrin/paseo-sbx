@@ -10,11 +10,13 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
 import { Text, View } from "react-native";
+import { AGENTS, AGENT_IDS, type AgentId } from "../shared/agents";
 import { sandboxSettings, type IsolationMode, type SandboxSettings } from "../shared/settings";
 import { invalidEnvNames, invalidMounts, parseList, parsePortList } from "../shared/spec";
 import { useTemplates } from "./queries";
 
 interface Draft {
+  enabledAgents: AgentId[];
   routeClaudeAgents: boolean;
   gsdPath: boolean;
   isolation: IsolationMode;
@@ -37,6 +39,7 @@ interface Draft {
 
 function toDraft(values: SandboxSettings): Draft {
   return {
+    enabledAgents: values.enabledAgents,
     routeClaudeAgents: values.routeClaudeAgents,
     gsdPath: values.gsdPath,
     isolation: values.isolation,
@@ -78,6 +81,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   if (badNames.length > 0) return `Not variables you can forward: ${badNames.join(", ")}`;
   return {
     ...base,
+    enabledAgents: draft.enabledAgents,
     routeClaudeAgents: draft.routeClaudeAgents,
     gsdPath: draft.gsdPath,
     isolation: draft.isolation,
@@ -146,6 +150,27 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
 
   return (
     <View style={{ gap: 24 }}>
+      <SettingsSection title="Agents">
+        <SettingsCard>
+          {AGENT_IDS.map((agent) => (
+            <SettingsSwitch
+              key={agent}
+              label={AGENTS[agent].label}
+              hint="Adds it to the + menu; set it up with Configure in the Sandboxes screen. Turning it off keeps its agents."
+              value={draft.enabledAgents.includes(agent)}
+              onValueChange={(on) =>
+                setDraft((current) => ({
+                  ...current,
+                  enabledAgents: on
+                    ? AGENT_IDS.filter((id) => id === agent || current.enabledAgents.includes(id))
+                    : current.enabledAgents.filter((id) => id !== agent),
+                }))
+              }
+            />
+          ))}
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title="Routing">
         <SettingsCard>
           <SettingsSwitch

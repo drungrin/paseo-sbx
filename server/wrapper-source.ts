@@ -11,24 +11,34 @@
 export const WRAPPER_SOURCE = String.raw`'use strict';
 // Written by the paseo-sbx Paseo plugin. Do not edit: the plugin rewrites it on startup.
 const cp = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Transform } = require('node:stream');
+const { StringDecoder } = require('node:string_decoder');
 
 // Set by the launcher so an Electron-hosted daemon runs us as Node; nothing below needs it.
 delete process.env.ELECTRON_RUN_AS_NODE;
 
 const SPEC_ENV = 'PASEO_SBX_SPEC';
-const SPEC_VERSION = 2;
+const SPEC_VERSION = 3;
 const ENSURE_FLAG = '--paseo-sbx-ensure';
+// The agent this launcher serves; the launcher sets it, Paseo's arguments arrive untouched.
+const AGENT = process.env.PASEO_SBX_AGENT || 'claude';
+delete process.env.PASEO_SBX_AGENT;
 const FORWARDED_PREFIXES = ['ANTHROPIC_', 'CLAUDE_', 'PASEO_', 'MCP_', 'DISABLE_'];
-const FORWARDED_NAMES = ['API_TIMEOUT_MS', 'MAX_THINKING_TOKENS', 'LANG', 'TZ'];
+const FORWARDED_NAMES = ['API_TIMEOUT_MS', 'MAX_THINKING_TOKENS', 'LANG', 'TZ', 'NO_BROWSER'];
+// Credentials in the daemon's environment stay out of every sbx process: the sandbox daemon
+// would inherit them when a call starts it.
+const CREDENTIAL_NAME = /(TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|ACCESS_KEY|PRIVATE_KEY)/i;
+// A catalog run Paseo started outside a session (no spec) is cut off after this long.
+const CATALOG_TIMEOUT_MS = 600000;
 // Host paths or plugin plumbing that mean nothing inside the VM.
 const HOST_ONLY = new Set([SPEC_ENV, 'PASEO_HOME', 'CLAUDE_ENV_FILE', 'CLAUDE_CONFIG_DIR']);
 // The sbx client reads these itself; a forwarded value would redirect the host-side client.
 const RESERVED = new Set(['PATH', 'HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'DBUS_SESSION_BUS_ADDRESS']);
 const RESERVED_PREFIXES = ['SBX_', 'DOCKER_'];
-const SYSTEM_DIRS = new Set(['/bin', '/sbin', '/usr/bin', '/usr/sbin', '/usr/local/bin', '/usr/local/sbin']);
 const args = process.argv.slice(2);
 
 class WrapperError extends Error {}
@@ -50,43 +60,6 @@ function isReserved(name) {
   return RESERVED.has(name) || RESERVED_PREFIXES.some(function (prefix) { return name.startsWith(prefix); });
 }
 
-function findClaude() {
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, 'claude');
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return fs.realpathSync(candidate);
-    } catch (error) {
-      // keep looking
-    }
-  }
-  return null;
-}
-
-// Paseo's model catalogue probe: no session (so no spec), started from $HOME with user
-// settings only, no tools, no MCP servers and no persisted session.
-function isCatalogProbe() {
-  const tools = args.indexOf('--tools');
-  return (
-    process.cwd() === os.homedir() &&
-    args.includes('--setting-sources=user') &&
-    args.includes('--strict-mcp-config') &&
-    args.includes('--no-session-persistence') &&
-    tools >= 0 &&
-    args[tools + 1] === ''
-  );
-}
-
-// Paseo's provider diagnostic asks the command for its version and login state.
-const INFO_COMMANDS = [['--version'], ['-v'], ['--help'], ['-h'], ['auth', 'status']];
-
-function isInfoCommand() {
-  return INFO_COMMANDS.some(function (command) {
-    return command.length === args.length && command.every(function (arg, index) { return args[index] === arg; });
-  });
-}
-
 function isSessionValue(name, spec) {
   return (
     name === SPEC_ENV ||
@@ -103,7 +76,7 @@ function isSessionValue(name, spec) {
 function managementEnv(spec) {
   const env = {};
   for (const name of Object.keys(process.env)) {
-    if (!isSessionValue(name, spec)) env[name] = process.env[name];
+    if (!isSessionValue(name, spec) && !CREDENTIAL_NAME.test(name)) env[name] = process.env[name];
   }
   env.XDG_STATE_HOME = spec.stateHome;
   return env;
@@ -239,14 +212,6 @@ function mountPath(entry) {
   return entry.endsWith(':ro') ? entry.slice(0, -3) : entry;
 }
 
-// The host binary reaches the guest through a read-only mount of its directory, so Claude
-// updates show up in place. A system directory would shadow the guest's own, so mount only
-// the binary there.
-function claudeMount(claude) {
-  const dir = path.dirname(claude);
-  return (SYSTEM_DIRS.has(dir) ? claude : dir) + ':ro';
-}
-
 // The plugin server writes locks/<name>.recreating while it removes and recreates a sandbox.
 // A marker whose owner died belongs to an interrupted recreation: drop it and carry on, since
 // the ensure step creates the sandbox when it is missing.
@@ -289,19 +254,27 @@ function normalizeTemplateRef(ref) {
   return first.includes('.') || first.includes(':') || first === 'localhost' ? withTag : 'docker.io/' + withTag;
 }
 
-function templateImageId(spec) {
+// sbx's built-in agents; a template's flavor starts with the one whose kit built it.
+const SBX_AGENTS = ['claude', 'codex', 'copilot', 'cursor', 'devin', 'docker-agent', 'droid', 'gemini', 'kiro', 'opencode', 'shell'];
+
+function templateInfo(spec) {
   const wanted = normalizeTemplateRef(spec.template);
   const list = JSON.parse(sbxOk(spec, ['template', 'ls', '--json'], 'sbx template ls') || '[]');
   const match = list.find(function (entry) {
     return entry.repository + ':' + entry.tag === wanted || entry.id === spec.template;
   });
   if (!match) throw new WrapperError('template ' + spec.template + ' is not in the Paseo sbx instance (sbx template ls)');
-  return match.id;
+  const flavor = String(match.flavor || '');
+  const kit = SBX_AGENTS.filter(function (agent) { return flavor.startsWith(agent); })
+    .sort(function (a, b) { return b.length - a.length; })[0];
+  return { id: match.id, kit: kit || spec.kit };
 }
 
-function ensureSandbox(spec, claude) {
+function ensureSandbox(spec) {
   fs.mkdirSync(spec.locksDir, { recursive: true });
   fs.mkdirSync(spec.claudeConfigDir, { recursive: true });
+  // Mounted even before an agent uses it, so adding an agent later needs no Recreate.
+  fs.mkdirSync(spec.agentHome ? spec.agentHome.path : spec.homesDir, { recursive: true });
   withLock(path.join(spec.locksDir, spec.name), function () {
     checkRecreating(spec);
     const list = JSON.parse(sbxOk(spec, ['ls', '--json'], 'sbx ls') || '[]');
@@ -310,7 +283,8 @@ function ensureSandbox(spec, claude) {
     const mounts = [spec.workspace];
     // The configured mounts it gets; the workspace panel compares them with the current settings.
     const created = [];
-    const extra = spec.mounts.concat([claudeMount(claude), spec.binDir + ':ro', spec.claudeConfigDir]);
+    // The agents' CLIs come from the template: nothing of the host's is mounted for them.
+    const extra = spec.mounts.concat([spec.binDir + ':ro', spec.claudeConfigDir]);
     for (const entry of extra) {
       const target = mountPath(entry);
       if (seen.has(target)) continue;
@@ -322,13 +296,16 @@ function ensureSandbox(spec, claude) {
       mounts.push(entry);
       if (spec.mounts.includes(entry)) created.push(entry);
     }
-    const imageId = spec.template ? templateImageId(spec) : null;
+    // sbx applies an agent's kit to the template's image: the one that built the template, or,
+    // without a template, the kit of the agent starting the sandbox.
+    const template = spec.template ? templateInfo(spec) : null;
+    const imageId = template ? template.id : null;
     const createArgs = ['create', '--name', spec.name, '--memory', spec.memory, '--no-progress'];
     if (spec.cpus > 0) createArgs.push('--cpus', String(spec.cpus));
     if (spec.template) createArgs.push('-t', spec.template, '--pull', 'never');
     // sbx's per-sandbox override of its global sandbox.disk.dockerVolume setting.
     const createEnv = spec.dockerDisk ? { DOCKER_SANDBOXES_DOCKER_SIZE: spec.dockerDisk } : undefined;
-    sbxOk(spec, createArgs.concat(['claude'], mounts), 'sbx create ' + spec.name, createEnv);
+    sbxOk(spec, createArgs.concat([template ? template.kit : spec.kit], mounts), 'sbx create ' + spec.name, createEnv);
     // A recreated sandbox keeps the publications chosen for it; reconcilePublications reapplies them.
     const previous = readState(spec);
     writeState(spec, {
@@ -376,17 +353,15 @@ function detectPorts(spec, env) {
     .sort(function (a, b) { return a - b; });
 }
 
-// Reconciles the sandbox's network rules with the spec, revoking rules it no longer lists. Only
-// a session sees every loopback port (Paseo's MCP server is in its arguments), so the ensure step
-// the plugin runs on its own keeps the host port rules a session added.
-function ensurePolicy(spec, ports, sessionPorts) {
+// Reconciles the sandbox's network rules with the spec, revoking rules it no longer lists. Host
+// loopback port rules are only added: agents sharing the VM each report their own ports, and
+// revoking one session's would cut off another's.
+function ensurePolicy(spec, ports) {
   withLock(path.join(spec.locksDir, spec.name), function () {
     const state = readState(spec);
     const applied = new Set(state.policies || []);
     const wanted = new Set(spec.networkAllow.concat(ports.map(function (port) { return 'localhost:' + port; })));
-    if (!sessionPorts) {
-      for (const rule of applied) if (rule.startsWith('localhost:')) wanted.add(rule);
-    }
+    for (const rule of applied) if (rule.startsWith('localhost:')) wanted.add(rule);
     const missing = Array.from(wanted).filter(function (rule) { return !applied.has(rule); });
     const stale = Array.from(applied).filter(function (rule) { return !wanted.has(rule); });
     if (missing.length > 0) {
@@ -505,18 +480,16 @@ function guestStateDir(spec) {
   return path.join(spec.claudeConfigDir, '.paseo-sbx');
 }
 
-function writeRelays(spec, relays, internalPorts, sessionPorts) {
+function writeRelays(spec, relays, internalPorts) {
   const dir = guestStateDir(spec);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'relays.json');
   let internal = internalPorts;
-  if (!sessionPorts) {
-    // As with the policy: keep the loopback ports a session reported.
-    try {
-      internal = Array.from(new Set(internal.concat(JSON.parse(fs.readFileSync(file, 'utf8')).internal || [])));
-    } catch (error) {
-      // no earlier report
-    }
+  // As with the policy: keep the loopback ports other sessions reported.
+  try {
+    internal = Array.from(new Set(internal.concat(JSON.parse(fs.readFileSync(file, 'utf8')).internal || [])));
+  } catch (error) {
+    // no earlier report
   }
   fs.writeFileSync(file + '.tmp', JSON.stringify({ relays: relays, internal: internal }));
   fs.renameSync(file + '.tmp', file);
@@ -569,6 +542,7 @@ function guestEnv(spec) {
     else env[name] = spec.env[name];
   }
   env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
+  if (spec.agentHome) env[spec.agentHome.env] = spec.agentHome.path;
   env.PASEO_SBX_SANDBOX = spec.name;
   return env;
 }
@@ -628,25 +602,191 @@ function exitLikeChild(code) {
   process.exit(code === null ? 1 : code);
 }
 
-function runOnHost(claude) {
-  const child = cp.spawn(claude, args, { stdio: 'inherit' });
-  relaySignals(function () { child.kill('SIGTERM'); });
-  child.on('exit', exitLikeChild);
+const IMAGE_LIMIT = 20 * 1024 * 1024;
+
+// Codex gets prompt images as files in a host temp dir that no sandbox mounts. Each is copied
+// into the sandbox's config dir, mounted at the same path on both sides, and the message points
+// there.
+function copyImage(spec, source) {
+  const stat = fs.lstatSync(source);
+  if (!stat.isFile() || stat.size > IMAGE_LIMIT) throw new Error(source + ' is not a regular file under 20 MB');
+  const data = fs.readFileSync(source);
+  const dir = path.join(guestStateDir(spec), 'images');
+  fs.mkdirSync(dir, { recursive: true });
+  const name = crypto.createHash('sha256').update(data).digest('hex').slice(0, 24) + path.extname(source);
+  const target = path.join(dir, name);
+  if (!fs.existsSync(target)) fs.writeFileSync(target, data, { mode: 0o600 });
+  return target;
+}
+
+function rewriteImages(spec, value) {
+  if (Array.isArray(value)) {
+    for (const item of value) rewriteImages(spec, item);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  if (value.type === 'localImage' && typeof value.path === 'string') {
+    value.path = copyImage(spec, value.path);
+    return;
+  }
+  for (const key of Object.keys(value)) rewriteImages(spec, value[key]);
+}
+
+// The app-server protocol is one JSON message per line. Only lines naming a local image are
+// parsed; everything else, and any line that fails, passes through as it came.
+function imageRewriter(spec) {
+  const decoder = new StringDecoder('utf8');
+  let pending = '';
+  function rewriteLine(line) {
+    if (!line.includes('"localImage"')) return line;
+    try {
+      const message = JSON.parse(line);
+      rewriteImages(spec, message);
+      return JSON.stringify(message);
+    } catch (error) {
+      log('passing a prompt image through unchanged: ' + error.message);
+      return line;
+    }
+  }
+  return new Transform({
+    transform: function (chunk, encoding, done) {
+      pending += decoder.write(chunk);
+      const lines = pending.split('\n');
+      pending = lines.pop();
+      done(null, lines.map(function (line) { return rewriteLine(line) + '\n'; }).join(''));
+    },
+    flush: function (done) {
+      pending += decoder.end();
+      done(null, pending ? rewriteLine(pending) : '');
+    },
+  });
 }
 
 // Session teardown happens in the guest. Whatever ends the session on the host (stdin closed,
 // the client killed by any signal, the daemon tree-killing us), the guest's stdin reaches EOF
-// and guest-supervisor.py stops Claude's process tree there. Host-side cleanup cannot do this
+// and guest-supervisor.py stops the agent's process tree there. Host-side cleanup cannot do this
 // reliably: the daemon tree-kills any process we spawn while it shuts us down.
-function runInSandbox(spec, claude, guest) {
+function runInSandbox(spec, guest) {
   const envFile = writeEnvFile(spec, guest);
   const envArgs = ['--env-file', envFile.file];
   for (const name of Object.keys(envFile.inline)) envArgs.push('-e', name);
-  const execArgs = ['exec', '-i', '-w', process.cwd()].concat(envArgs, [
-    spec.name, 'python3', path.join(spec.binDir, 'guest-supervisor.py'), claude,
+  const execArgs = ['exec', '-i', '-w', spec.agentCwd].concat(envArgs, [
+    spec.name, 'python3', path.join(spec.binDir, 'guest-supervisor.py'), spec.binary,
   ], args);
   const env = Object.assign(managementEnv(spec), envFile.inline);
-  const child = cp.spawn('sbx', execArgs, { stdio: 'inherit', env: env });
+  const rewrite = spec.agent === 'codex';
+  const child = cp.spawn('sbx', execArgs, { stdio: [rewrite ? 'pipe' : 'inherit', 'inherit', 'inherit'], env: env });
+  if (rewrite) {
+    child.stdin.on('error', function () {});
+    process.stdin.pipe(imageRewriter(spec)).pipe(child.stdin);
+  }
+  relaySignals(function () { child.kill('SIGTERM'); });
+  child.on('exit', exitLikeChild);
+}
+
+// Paseo's catalog, diagnostic, archive and history runs carry no session spec. They go to the
+// agent's catalog sandbox, which the plugin creates from sbx's kit when the agent is configured
+// and describes in catalog/<agent>.json, next to the bin dir.
+function readCatalog() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'catalog', AGENT + '.json'), 'utf8'));
+  } catch (error) {
+    return null;
+  }
+}
+
+// The catalog's sbx calls need only the instance and the run dir; no session values exist.
+function catalogTarget(catalog) {
+  return { stateHome: catalog.stateHome, runDir: catalog.runDir, env: {} };
+}
+
+// Paseo adds PASEO_AGENT_ID to every session's environment. A daemon started from inside an agent
+// session (a nested or development daemon) carries one of its own, which every spawn inherits:
+// the same value in the parent's (the daemon's) environment means no session.
+function sessionAgentId() {
+  const id = process.env.PASEO_AGENT_ID;
+  if (!id) return null;
+  try {
+    const parent = fs.readFileSync('/proc/' + process.ppid + '/environ', 'utf8').split('\0');
+    if (parent.includes('PASEO_AGENT_ID=' + id)) return null;
+  } catch (error) {
+    // no /proc: count it as a session
+  }
+  return id;
+}
+
+function isVersionQuery() {
+  return args.length === 1 && (args[0] === '--version' || args[0] === '-v');
+}
+
+// Paseo asks for the version before probing models, within seconds, and then probes the catalog
+// right away. The version comes from the catalog's record; the VM starts meanwhile.
+function answerVersion(catalog) {
+  process.stdout.write(catalog.cliVersion + '\n');
+  const warm = cp.spawn('sbx', ['exec', catalog.name, 'true'], {
+    detached: true,
+    stdio: 'ignore',
+    env: managementEnv(catalogTarget(catalog)),
+  });
+  warm.unref();
+}
+
+// Claude's settings stay on the host, out of the catalog VM; their env (a gateway's URL and
+// token) reaches only this run, through the private env file.
+function catalogEnv(catalog) {
+  const env = {};
+  for (const name of Object.keys(process.env)) {
+    if (HOST_ONLY.has(name) || isReserved(name)) continue;
+    if (FORWARDED_NAMES.includes(name) || FORWARDED_PREFIXES.some(function (prefix) { return name.startsWith(prefix); })) {
+      env[name] = process.env[name];
+    }
+  }
+  if (catalog.hostSettings) {
+    try {
+      const settingsEnv = JSON.parse(fs.readFileSync(catalog.hostSettings, 'utf8')).env || {};
+      for (const name of Object.keys(settingsEnv)) {
+        if (typeof settingsEnv[name] === 'string' && !isReserved(name)) env[name] = settingsEnv[name];
+      }
+    } catch (error) {
+      log('could not read ' + catalog.hostSettings + ': ' + error.message);
+    }
+  }
+  if (catalog.claudeConfigDir) env.CLAUDE_CONFIG_DIR = catalog.claudeConfigDir;
+  if (catalog.agentHome) env[catalog.agentHome.env] = catalog.agentHome.path;
+  return env;
+}
+
+function runInCatalog(catalog) {
+  const target = catalogTarget(catalog);
+  const env = catalogEnv(catalog);
+  const detected = new Set();
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('ANTHROPIC_')) collectLoopbackPorts(env[name] || '', detected);
+  }
+  // Only ports the catalog's policy allows are relayed; Update the catalog after adding one.
+  const ports = Array.from(detected).filter(function (port) { return catalog.ports.includes(port); });
+  if (ports.length < detected.size) log('the ' + AGENT + ' catalog does not relay every loopback port its settings use: update it');
+  const helpers = ports.length > 0
+    ? 'missing=$(python3 "$1" --missing ' + ports.join(' ') + '); ' +
+      'if [ -n "$missing" ]; then nohup python3 "$2" $missing >>/tmp/paseo-sbx-forward.log 2>&1 & python3 "$1" --wait $missing; fi; '
+    : '';
+  const envFile = writeEnvFile(target, env);
+  const envArgs = ['--env-file', envFile.file];
+  for (const name of Object.keys(envFile.inline)) envArgs.push('-e', name);
+  const execArgs = ['exec', '-i', '-w', catalog.workdir].concat(envArgs, [
+    catalog.name, 'sh', '-c', helpers + 'shift 2; exec python3 "$0" "$@"',
+    path.join(catalog.binDir, 'guest-supervisor.py'),
+    path.join(catalog.binDir, 'wait-ports.py'),
+    path.join(catalog.binDir, 'loopback-forward.py'),
+    catalog.binary,
+  ], args);
+  const child = cp.spawn('sbx', execArgs, { stdio: 'inherit', env: Object.assign(managementEnv(target), envFile.inline) });
+  // A CLI waiting for an interactive login would otherwise hold the run forever.
+  const timer = setTimeout(function () {
+    log('the ' + AGENT + ' catalog run took over ' + CATALOG_TIMEOUT_MS / 1000 + ' s; stopping it');
+    child.kill('SIGTERM');
+  }, CATALOG_TIMEOUT_MS);
+  timer.unref();
   relaySignals(function () { child.kill('SIGTERM'); });
   child.on('exit', exitLikeChild);
 }
@@ -665,27 +805,38 @@ function readSpec() {
 }
 
 function main() {
-  const claude = findClaude();
-  if (!claude) throw new WrapperError('claude was not found on PATH');
   const spec = readSpec();
   if (!spec) {
-    if (isCatalogProbe() || isInfoCommand()) return runOnHost(claude);
-    // A probe whose argv changed with an SDK update lands here too: say what we got.
-    throw new WrapperError(
-      'missing ' + SPEC_ENV + ': claude-sbx sessions need the paseo-sbx plugin enabled (cwd ' +
-        process.cwd() + ', args ' + JSON.stringify(args.slice(0, 12)) + ')',
-    );
+    // A session always gets a spec from the plugin. One without (plugin disabled or failed)
+    // must not run anywhere; the plugin marks the history runs it sends to the catalog.
+    const agentId = sessionAgentId();
+    if (agentId && process.env.PASEO_SBX_ROUTE !== 'catalog') {
+      throw new WrapperError(
+        'missing ' + SPEC_ENV + ': ' + AGENT + '-sbx sessions need the paseo-sbx plugin enabled (agent ' + agentId + ')',
+      );
+    }
+    const catalog = readCatalog();
+    if (!catalog) {
+      throw new WrapperError('no catalog sandbox for ' + AGENT + ': press Configure for it in the Sandboxes screen');
+    }
+    if (isVersionQuery()) return answerVersion(catalog);
+    return runInCatalog(catalog);
   }
   removeOrphanEnvFiles(spec);
   checkRecreating(spec);
   if (args[0] !== ENSURE_FLAG) writeLease(spec);
-  ensureSandbox(spec, claude);
+  ensureSandbox(spec);
+  if (spec.agentHome) {
+    const created = readState(spec).mounts;
+    if (created && !created.includes(spec.homesDir)) {
+      throw new WrapperError(spec.name + ' predates shared agent homes: recreate it from its workspace panel to run ' + spec.agent);
+    }
+  }
   const guest = guestEnv(spec);
   const ports = detectPorts(spec, guest);
-  const sessionPorts = args[0] !== ENSURE_FLAG;
-  ensurePolicy(spec, ports, sessionPorts);
+  ensurePolicy(spec, ports);
   const relays = withLock(path.join(spec.locksDir, spec.name), function () { return reconcilePublications(spec, ports); });
-  writeRelays(spec, relays, ports, sessionPorts);
+  writeRelays(spec, relays, ports);
   if (args[0] === ENSURE_FLAG) {
     // Publications need their relays now; without any, preparing a sandbox does not enter it.
     // Home mounts then wait for the first session, or for a shell from the workspace panel.
@@ -693,8 +844,8 @@ function main() {
     return;
   }
   ensureGuestHelpers(spec, ports);
-  log('sandbox=' + spec.name + ' cwd=' + process.cwd() + ' claude=' + claude);
-  runInSandbox(spec, claude, guest);
+  log('sandbox=' + spec.name + ' agent=' + spec.agent + ' cwd=' + spec.agentCwd);
+  runInSandbox(spec, guest);
 }
 
 try {
@@ -704,14 +855,17 @@ try {
 }
 `;
 
-/** Shell launcher registered as the provider command; restores Node mode for Electron hosts. */
-export function launcherSource(nodeBinary: string, wrapperPath: string): string {
+/**
+ * Shell launcher registered as an agent's provider command: names the agent for the wrapper,
+ * which receives Paseo's arguments untouched, and restores Node mode for Electron hosts.
+ */
+export function launcherSource(nodeBinary: string, wrapperPath: string, agent: string): string {
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
   return [
     "#!/bin/sh",
     "# Written by the paseo-sbx Paseo plugin. Do not edit: the plugin rewrites it on startup.",
     "# The daemon may run inside Electron, whose binary acts as Node only with this variable.",
-    `ELECTRON_RUN_AS_NODE=1 exec ${quote(nodeBinary)} ${quote(wrapperPath)} "$@"`,
+    `PASEO_SBX_AGENT=${agent} ELECTRON_RUN_AS_NODE=1 exec ${quote(nodeBinary)} ${quote(wrapperPath)} "$@"`,
     "",
   ].join("\n");
 }
@@ -836,7 +990,11 @@ import os, signal, subprocess, sys, threading, time
 
 GRACE = float(os.environ.get("PASEO_SBX_STOP_GRACE", "5"))
 
-child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, start_new_session=True)
+try:
+    child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, start_new_session=True)
+except FileNotFoundError:
+    sys.stderr.write("[paseo-sbx] %s is not in this sandbox: its template lacks it. Add it to the template, or pick one built for it\n" % sys.argv[1])
+    sys.exit(127)
 # pid -> start time of every process seen under Claude. Tools may run in their own process
 # groups and are reparented once Claude exits, so they are tracked while Claude still owns them;
 # the start time guards against killing a reused pid.

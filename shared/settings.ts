@@ -1,5 +1,6 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { AGENT_IDS } from "./agents";
 
 export const ISOLATION_MODES = ["workspace", "directory"] as const;
 export type IsolationMode = (typeof ISOLATION_MODES)[number];
@@ -45,6 +46,8 @@ const memoryAlertSchema = z.object({
 });
 
 export const sandboxSettingsSchema = z.object({
+  /** Agents whose sandboxed provider the plugin registers; a turned-off one is kept, disabled. */
+  enabledAgents: z.array(z.enum(AGENT_IDS)).default(["claude"]),
   /** Rewrites new `claude` agents to `claude-sbx`, except under `excludedPaths`. */
   routeClaudeAgents: z.boolean().default(false),
   isolation: z.enum(ISOLATION_MODES).default("workspace"),

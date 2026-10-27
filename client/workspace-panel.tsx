@@ -634,6 +634,7 @@ const MOUNT_SOURCE_LABELS: Record<MountSource, string> = {
   member: "GSD Path member",
   git: "git metadata",
   claude: "shared Claude config",
+  agents: "agents' shared homes",
 };
 
 function mountNote(mount: Description["mounts"][number]): string {

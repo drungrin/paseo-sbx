@@ -39,10 +39,14 @@ beforeEach(() => {
   workspace = join(root, "workspace");
   for (const dir of [home, bin, workspace]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(bin, "sbx"), FAKE_SBX);
-  writeFileSync(join(bin, "claude"), FAKE_CLAUDE);
+  for (const cli of ["claude", "codex"]) {
+    writeFileSync(join(bin, cli), FAKE_CLAUDE);
+    chmodSync(join(bin, cli), 0o755);
+  }
   chmodSync(join(bin, "sbx"), 0o755);
-  chmodSync(join(bin, "claude"), 0o755);
-  wrapper = join(root, "paseo-sbx-claude.cjs");
+  // Installed like the plugin does: in the bin dir, next to which catalog/ holds the records.
+  mkdirSync(join(root, "state", "bin"), { recursive: true });
+  wrapper = join(root, "state", "bin", "paseo-sbx-claude.cjs");
   writeFileSync(wrapper, WRAPPER_SOURCE);
 });
 
@@ -55,7 +59,13 @@ function spec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
   mkdirSync(join(state, "bin"), { recursive: true });
   writeFileSync(join(state, "bin", "guest-supervisor.py"), SUPERVISOR_SOURCE);
   return {
-    version: 2,
+    version: 3,
+    agent: "claude",
+    binary: "claude",
+    kit: "claude",
+    agentCwd: workspace,
+    agentHome: null,
+    homesDir: join(state, "homes"),
     name: "paseo-workspace-0000abcd",
     key: "workspace:wks_1",
     repoKey: `dir:${workspace}`,
@@ -118,29 +128,109 @@ const PROBE_ARGS = [
   "--no-session-persistence",
 ];
 
-describe("wrapper", () => {
-  it("runs Paseo's catalogue probe on the host without touching sbx", () => {
+/** The catalog record the plugin writes when Claude is configured, and its sandbox in the fake sbx. */
+function catalog() {
+  const state = join(root, "state");
+  const workdir = join(state, "catalog", "claude");
+  mkdirSync(join(workdir, "claude-config"), { recursive: true });
+  writeFileSync(join(state, "bin", "guest-supervisor.py"), SUPERVISOR_SOURCE);
+  const hostSettings = join(home, ".claude", "settings.json");
+  mkdirSync(dirname(hostSettings), { recursive: true });
+  writeFileSync(hostSettings, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "gateway-token", ANTHROPIC_BASE_URL: "https://gw.example" } }));
+  const record = {
+    version: 1,
+    agent: "claude",
+    name: "paseo-catalog-claude-0000beef",
+    stateHome: join(state, "sbx"),
+    runDir: join(state, "run"),
+    binDir: join(state, "bin"),
+    workdir,
+    binary: "claude",
+    cliVersion: "2.1.306 (Claude Code)",
+    claudeConfigDir: join(workdir, "claude-config"),
+    agentHome: null,
+    hostSettings,
+    ports: [],
+    createdAt: "2026-10-26T00:00:00.000Z",
+  };
+  writeFileSync(join(state, "catalog", "claude.json"), JSON.stringify(record));
+  writeFileSync(join(root, "sbx-state.json"), JSON.stringify({ sandboxes: [record.name] }));
+  return record;
+}
+
+describe("wrapper without a session", () => {
+  it("runs Paseo's catalog probe in the agent's catalog sandbox, with Claude's settings env only in the run", () => {
+    const record = catalog();
     const result = run(PROBE_ARGS, { cwd: home, input: "hello\n" });
     expect(result.status).toBe(0);
-    expect(result.calls).toEqual([]);
-    expect(JSON.parse(result.stdout).args).toEqual(PROBE_ARGS);
+    expect(result.calls.map((call) => call.args[0])).toEqual(["exec"]);
+    const exec = result.calls[0];
+    expect(exec.args).toEqual(expect.arrayContaining(["-w", record.workdir, record.name, "claude", ...PROBE_ARGS]));
+    expect(exec.args.join(" ")).not.toContain("gateway-token");
+    expect(exec.envNames).not.toContain("ANTHROPIC_AUTH_TOKEN");
+    const guest = JSON.parse(result.stdout);
+    expect(guest.args).toEqual(PROBE_ARGS);
+    expect(guest.cwd).toBe(record.workdir);
+    expect(guest.env.ANTHROPIC_AUTH_TOKEN).toBe("gateway-token");
+    expect(guest.env.CLAUDE_CONFIG_DIR).toBe(record.claudeConfigDir);
   });
 
-  it("answers version and login queries on the host without a spec", () => {
-    for (const query of [["--version"], ["auth", "status"]]) {
-      const result = run(query, { cwd: workspace });
-      expect(result.status).toBe(0);
-      expect(result.calls).toEqual([]);
-      expect(JSON.parse(result.stdout).args).toEqual(query);
-    }
+  it("answers the version from the catalog record and runs other queries in the catalog", () => {
+    catalog();
+    const version = run(["--version"], { cwd: workspace });
+    expect(version.status).toBe(0);
+    expect(version.stdout).toBe("2.1.306 (Claude Code)\n");
+    expect(version.calls.some((call) => call.args[0] === "create")).toBe(false);
+
+    const login = run(["auth", "status"], { cwd: workspace });
+    expect(login.status).toBe(0);
+    expect(JSON.parse(login.stdout).args).toEqual(["auth", "status"]);
   });
 
-  it("fails closed for a session without a spec", () => {
-    const result = run(["--output-format", "stream-json"], { cwd: home });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("claude-sbx sessions need the paseo-sbx plugin enabled");
-    expect(result.calls).toEqual([]);
+  it("fails closed for a session without a spec, and asks to configure an agent without a catalog", () => {
+    catalog();
+    const session = run(["--output-format", "stream-json"], { cwd: home, env: { PASEO_AGENT_ID: "agent-1" } });
+    expect(session.status).toBe(1);
+    expect(session.stderr).toContain("claude-sbx sessions need the paseo-sbx plugin enabled");
+    expect(session.calls).toEqual([]);
+
+    rmSync(join(root, "state", "catalog", "claude.json"));
+    const probe = run(PROBE_ARGS, { cwd: home });
+    expect(probe.status).toBe(1);
+    expect(probe.stderr).toContain("press Configure");
+    expect(probe.calls).toEqual([]);
   });
+
+  it("tells an agent id the daemon itself inherited apart from a session's", () => {
+    catalog();
+    // The daemon runs with PASEO_AGENT_ID (started from an agent session); its probes inherit it.
+    const daemon = spawnSync(
+      process.execPath,
+      ["-e", `require("node:child_process").spawnSync(process.execPath, ${JSON.stringify([wrapper, "--version"])}, { stdio: "inherit" })`],
+      {
+        cwd: workspace,
+        encoding: "utf8",
+        env: {
+          PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+          HOME: home,
+          PASEO_AGENT_ID: "the-daemons-own",
+          FAKE_SBX_STATE: join(root, "sbx-state.json"),
+          FAKE_SBX_LOG: join(root, "sbx.log"),
+        },
+      },
+    );
+    expect(daemon.stdout).toBe("2.1.306 (Claude Code)\n");
+  });
+
+  it("runs the history the plugin routes to the catalog despite the agent id", () => {
+    catalog();
+    const result = run(["--resume", "x"], { cwd: home, env: { PASEO_AGENT_ID: "agent-1", PASEO_SBX_ROUTE: "catalog" } });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).args).toEqual(["--resume", "x"]);
+  });
+});
+
+describe("wrapper", () => {
 
   it("creates the sandbox once, applies its policy once, and runs claude inside it", () => {
     const sandbox = spec();
@@ -164,7 +254,6 @@ describe("wrapper", () => {
       "claude",
       workspace,
       `${home}:ro`,
-      `${bin}:ro`,
       `${sandbox.binDir}:ro`,
       sandbox.claudeConfigDir,
     ]);
@@ -422,16 +511,20 @@ describe("wrapper hardening", () => {
     expect(result.stderr).toContain("unlock the OS keyring");
   });
 
-  it("launches the wrapper through the shell launcher with arguments intact", () => {
+  it("launches the wrapper through an agent's launcher with arguments intact", () => {
     const dir = join(root, "it's a dir");
     mkdirSync(dir);
     const script = join(dir, "echo-args.cjs");
-    writeFileSync(script, "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), electron: process.env.ELECTRON_RUN_AS_NODE }));");
+    writeFileSync(
+      script,
+      "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), electron: process.env.ELECTRON_RUN_AS_NODE, agent: process.env.PASEO_SBX_AGENT }));",
+    );
     const launcher = join(dir, "launcher");
-    writeFileSync(launcher, launcherSource(process.execPath, script));
+    writeFileSync(launcher, launcherSource(process.execPath, script, "codex"));
     chmodSync(launcher, 0o755);
+    // Paseo's version probes run the command alone: the agent must not depend on arguments.
     const result = spawnSync(launcher, ["a b", "c'd", ""], { encoding: "utf8" });
-    expect(JSON.parse(result.stdout)).toEqual({ args: ["a b", "c'd", ""], electron: "1" });
+    expect(JSON.parse(result.stdout)).toEqual({ args: ["a b", "c'd", ""], electron: "1", agent: "codex" });
   });
 });
 
@@ -479,6 +572,15 @@ describe("wrapper and the plugin's sandbox operations", () => {
     const helpers = result.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh");
     expect(helpers?.args.slice(-2)).toEqual([".gsd-path", target]);
     expect(helpers?.args[4]).toContain('sh "$dir/home-mounts.sh" "$@"');
+  });
+
+  it("creates the sandbox with the kit that built its template", () => {
+    setFakeState({ templates: [{ id: "c0dec0dec0de", repository: "docker.io/docker/sandbox-templates", tag: "codex-docker", flavor: "codex-docker" }] });
+    const sandbox = spec({ template: "docker.io/docker/sandbox-templates:codex-docker" });
+    const result = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(0);
+    const create = result.calls.find((call) => call.args[0] === "create");
+    expect(create?.args[create.args.indexOf("never") + 1]).toBe("codex");
   });
 
   it("refuses a template the Paseo instance does not have, before creating anything", () => {
@@ -646,3 +748,64 @@ async function waitForTools(): Promise<number[]> {
   });
 }
 
+
+describe("Codex sessions", () => {
+  function codexSpec(overrides: Partial<SandboxSpec> = {}): SandboxSpec {
+    const homesDir = join(root, "state", "homes");
+    return spec({
+      agent: "codex",
+      binary: "codex",
+      kit: "codex",
+      agentHome: { env: "CODEX_HOME", path: join(homesDir, "codex") },
+      homesDir,
+      mounts: [homesDir],
+      ...overrides,
+    });
+  }
+
+  it("runs the template's codex with the shared home in the agent's cwd", () => {
+    const sandbox = codexSpec();
+    const result = run(["app-server"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: '{"id":1,"method":"initialize"}\n' });
+    expect(result.status).toBe(0);
+    const exec = result.calls.find((call) => call.args[0] === "exec" && call.args[1] === "-i");
+    expect(exec?.args).toEqual(expect.arrayContaining(["-w", workspace, sandbox.name, "codex", "app-server"]));
+    const guest = JSON.parse(result.stdout);
+    expect(guest.env.CODEX_HOME).toBe(join(root, "state", "homes", "codex"));
+    expect(guest.input).toBe('{"id":1,"method":"initialize"}');
+    const state = JSON.parse(readFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), "utf8"));
+    expect(state.mounts).toContain(sandbox.homesDir);
+  });
+
+  it("copies prompt images into the sandbox's config dir and points the message there", () => {
+    const sandbox = codexSpec();
+    const image = join(root, "host-tmp", "prompt.png");
+    mkdirSync(dirname(image), { recursive: true });
+    writeFileSync(image, "png-bytes");
+    const turn = { id: 2, method: "turn/start", params: { input: [{ type: "text", text: "hi" }, { type: "localImage", path: image }] } };
+    const result = run(["app-server"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: `${JSON.stringify(turn)}\n` });
+    expect(result.status).toBe(0);
+    const forwarded = JSON.parse(JSON.parse(result.stdout).input);
+    const copied = forwarded.params.input[1].path as string;
+    expect(copied.startsWith(join(sandbox.claudeConfigDir, ".paseo-sbx", "images"))).toBe(true);
+    expect(readFileSync(copied, "utf8")).toBe("png-bytes");
+    expect(forwarded.params.input[0]).toEqual({ type: "text", text: "hi" });
+  });
+
+  it("passes a line it cannot rewrite through unchanged", () => {
+    const sandbox = codexSpec();
+    const line = '{"id":3,"params":{"type":"localImage","path":"/nonexistent.png"}}';
+    const result = run(["app-server"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: `${line}\n` });
+    expect(JSON.parse(result.stdout).input).toBe(line);
+    expect(result.stderr).toContain("passing a prompt image through unchanged");
+  });
+
+  it("asks to recreate a sandbox created before agents shared homes", () => {
+    const sandbox = codexSpec();
+    writeFileSync(join(root, "sbx-state.json"), JSON.stringify({ sandboxes: [sandbox.name] }));
+    mkdirSync(sandbox.stateDir, { recursive: true });
+    writeFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), JSON.stringify({ mounts: [`${home}:ro`], policies: [] }));
+    const result = run(["app-server"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("predates shared agent homes");
+  });
+});

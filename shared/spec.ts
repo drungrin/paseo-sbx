@@ -1,8 +1,9 @@
+import { AGENTS, type AgentId } from "./agents";
 import type { IsolationMode, RepoConfig, SandboxSettings } from "./settings";
 
-export const PROVIDER_ID = "claude-sbx";
+export const PROVIDER_ID = AGENTS.claude.providerId;
 export const SPEC_ENV = "PASEO_SBX_SPEC";
-export const SPEC_VERSION = 2;
+export const SPEC_VERSION = 3;
 
 /**
  * Launch contract between the plugin (control plane) and the wrapper (data plane), passed
@@ -10,6 +11,16 @@ export const SPEC_VERSION = 2;
  */
 export interface SandboxSpec {
   version: typeof SPEC_VERSION;
+  /** The agent this session runs, its CLI on the guest's PATH, and the cwd it works in. */
+  agent: AgentId;
+  binary: string;
+  /** sbx kit that creates the sandbox when no template names one (the agent's). */
+  kit: string;
+  agentCwd: string;
+  /** The agent's shared home and the variable naming it (`sharedHome` of the agent), or null. */
+  agentHome: { env: string; path: string } | null;
+  /** Parent of every agent's shared home, mounted in sandboxes created since agents share homes. */
+  homesDir: string;
   name: string;
   key: string;
   /** Repository the sandbox's settings come from (`repoKey()`), recorded at creation. */
@@ -104,6 +115,14 @@ export function templatePrepName(repoKey: string, root: string): string {
   return `paseo-tpl-${slug(root)}-${fnv1a(`template:${repoKey}`)}`;
 }
 
+/**
+ * An agent's catalog sandbox. sbx keeps network policies per sandbox name for every instance of
+ * the user, so the name carries the instance (its state home).
+ */
+export function catalogName(agent: string, stateHome: string): string {
+  return `paseo-catalog-${agent}-${fnv1a(`catalog:${stateHome}`)}`;
+}
+
 /** Tags `template save` accepts here: `name`, `name:tag` or `namespace/name:tag`. */
 export const TEMPLATE_TAG_PATTERN = /^[a-z0-9._-]+(\/[a-z0-9._-]+)?(:[A-Za-z0-9._-]+)?$/;
 
@@ -161,7 +180,7 @@ export interface MountEntry {
 }
 
 /** Why a sandbox mounts a path; the workspace panel shows it. */
-export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "claude"] as const;
+export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "claude", "agents"] as const;
 export type MountSource = (typeof MOUNT_SOURCES)[number];
 
 /** Parses `path` or `path:ro`, expanding a leading `~/`. Returns null for relative paths. */

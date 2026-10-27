@@ -1,9 +1,10 @@
+import type { AgentId } from "../shared/agents";
 import { usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import {
   describeSandboxRpc,
-  ensureProviderRpc,
+  configureAgentRpc,
   getOperationRpc,
   listSandboxesRpc,
   listTemplatesRpc,
@@ -73,10 +74,15 @@ export function useInvalidateAll() {
   return () => queryClient.invalidateQueries();
 }
 
-export function useEnsureProvider() {
-  const ensure = useRpc(ensureProviderRpc);
+/** Registers an agent's provider and sets up its catalog sandbox; can take minutes the first time. */
+export function useConfigureAgent() {
+  const configure = useRpc(configureAgentRpc);
+  const awaitOperation = useAwaitOperation();
   const invalidate = useInvalidateAll();
-  return useMutation({ mutationFn: () => ensure({}), onSettled: invalidate });
+  return useMutation({
+    mutationFn: async (input: { agent: AgentId; update: boolean }) => awaitOperation(await configure(input)),
+    onSettled: invalidate,
+  });
 }
 
 export function useSandboxAction() {

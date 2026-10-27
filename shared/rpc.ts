@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { AGENT_IDS } from "./agents";
 import { MOUNT_SOURCES } from "./spec";
 
 const operationSchema = z.object({
@@ -24,9 +25,30 @@ export const getOperationRpc = defineRpc({
 const providerStatusSchema = z.object({
   /** An entry exists under `agents.providers`. */
   configured: z.boolean(),
-  /** The entry points at this plugin's current wrapper and node binary. */
+  /** The entry is enabled and points at this plugin's current launcher. */
   current: z.boolean(),
 });
+
+const agentStatusSchema = z.object({
+  id: z.enum(AGENT_IDS),
+  label: z.string(),
+  providerId: z.string(),
+  /** Turned on in the plugin settings. */
+  enabled: z.boolean(),
+  provider: providerStatusSchema,
+  catalog: z.object({
+    name: z.string(),
+    exists: z.boolean(),
+    /** The kit's CLI version, recorded when the catalog was created; null before. */
+    cliVersion: z.string().nullable(),
+    createdAt: z.string().nullable(),
+  }),
+  /** The sbx service secret it signs in with, and whether one applies. */
+  login: z.object({ service: z.string(), stored: z.boolean() }),
+  /** How to add the CLI to a template. */
+  install: z.string(),
+});
+export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
 export const statusRpc = defineRpc({
   name: "status.get",
@@ -38,7 +60,7 @@ export const statusRpc = defineRpc({
       daemon: z.enum(["running", "stopped", "unavailable"]),
       error: z.string().nullable(),
     }),
-    provider: providerStatusSchema,
+    agents: z.array(agentStatusSchema),
     stateHome: z.string(),
     wrapperPath: z.string(),
     envFile: z.string(),
@@ -48,10 +70,11 @@ export const statusRpc = defineRpc({
   }),
 });
 
-export const ensureProviderRpc = defineRpc({
-  name: "provider.ensure",
-  input: z.object({}),
-  output: providerStatusSchema,
+/** Registers the agent's provider and creates its catalog sandbox; `update` recreates it from a fresh kit. */
+export const configureAgentRpc = defineRpc({
+  name: "agent.configure",
+  input: z.object({ agent: z.enum(AGENT_IDS), update: z.boolean() }),
+  output: operationSchema,
 });
 
 const sandboxSummarySchema = z.object({
@@ -59,7 +82,7 @@ const sandboxSummarySchema = z.object({
   status: z.string(),
   workspaces: z.array(z.string()),
   memory: z.string().nullable(),
-  kind: z.enum(["working", "template-prep"]),
+  kind: z.enum(["working", "template-prep", "catalog"]),
   repoKey: z.string().nullable(),
   template: z.string().nullable(),
 });

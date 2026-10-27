@@ -2,8 +2,8 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { existsSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
 import {
+  configureAgentRpc,
   describeSandboxRpc,
-  ensureProviderRpc,
   finishTemplateRpc,
   getOperationRpc,
   listSandboxesRpc,
@@ -21,7 +21,10 @@ import {
 import type { SandboxSettings } from "../shared/settings";
 import { formatMount, isReservedEnvName, memoryMiB, templatePrepName, type SandboxSpec } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
-import { ensureProvider, providerStatus } from "./provider";
+import { AGENTS, AGENT_IDS } from "../shared/agents";
+import { catalogName } from "../shared/spec";
+import { catalogStatus, ensureCatalog } from "./catalog";
+import { disableUnusedProviders, ensureProvider, providerStatus } from "./provider";
 import { activeAgentsBySandbox } from "./agents";
 import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
 import { getOperation, operationsFor, runOperation } from "./operations";
@@ -79,10 +82,31 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
 
   server.handle(statusRpc, async (_input, { paseo }) => {
     const settings = await deps.readSettings();
-    const [sbx, provider] = await Promise.all([sbxHealth(paths), providerStatus(paseo, paths)]);
+    await disableUnusedProviders(paseo, settings);
+    const sbx = await sbxHealth(paths);
+    const agents = await Promise.all(
+      AGENT_IDS.map(async (id) => {
+        const [provider, catalog] = await Promise.all([providerStatus(paseo, paths, id), catalogStatus(paths, id)]);
+        return {
+          id,
+          label: AGENTS[id].label,
+          providerId: AGENTS[id].providerId,
+          enabled: settings.enabledAgents.includes(id),
+          provider,
+          catalog: {
+            name: catalog.name,
+            exists: catalog.exists,
+            cliVersion: catalog.record?.cliVersion ?? null,
+            createdAt: catalog.record?.createdAt ?? null,
+          },
+          login: catalog.login,
+          install: AGENTS[id].install,
+        };
+      }),
+    );
     return {
       sbx,
-      provider,
+      agents,
       stateHome: paths.stateHome,
       wrapperPath: paths.wrapper,
       envFile: envFilePath(settings, paths),
@@ -92,7 +116,15 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     };
   });
 
-  server.handle(ensureProviderRpc, (_input, { paseo }) => ensureProvider(paseo, paths));
+  server.handle(configureAgentRpc, async ({ agent, update }, { paseo }) => {
+    const settings = await deps.readSettings();
+    if (!settings.enabledAgents.includes(agent)) throw new Error(`${AGENTS[agent].label} is off: turn it on in the plugin settings`);
+    return runOperation(update ? "update" : "configure", catalogName(agent, paths.stateHome), async () => {
+      await ensureProvider(paseo, paths, agent);
+      const record = await ensureCatalog(paths, settings, agent, { update });
+      return { cliVersion: record.cliVersion };
+    }, 0);
+  });
 
   server.handle(listSandboxesRpc, async () => ({ sandboxes: await listSandboxes(paths) }));
 

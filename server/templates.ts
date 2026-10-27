@@ -1,4 +1,5 @@
 import { totalmem } from "node:os";
+import { kitForFlavor } from "../shared/agents";
 import type { SandboxSettings } from "../shared/settings";
 import { TEMPLATE_TAG_PATTERN, memoryMiB, normalizeTemplateRef, templatePrepName } from "../shared/spec";
 import type { ServerDeps } from "./hooks";
@@ -17,6 +18,8 @@ export interface TemplateInfo {
   sizeBytes: number | null;
   /** sbx's own images. */
   base: boolean;
+  /** The kit that built it (`claude-code-docker`); sandboxes from it must use that kit. */
+  flavor: string | null;
 }
 
 interface SbxTemplateEntry {
@@ -25,6 +28,7 @@ interface SbxTemplateEntry {
   tag: string;
   created_at?: string;
   size?: number;
+  flavor?: string;
 }
 
 export async function listTemplates(paths: PluginPaths): Promise<TemplateInfo[]> {
@@ -35,6 +39,7 @@ export async function listTemplates(paths: PluginPaths): Promise<TemplateInfo[]>
     createdAt: entry.created_at ?? null,
     sizeBytes: entry.size ?? null,
     base: entry.repository === "docker.io/docker/sandbox-templates",
+    flavor: entry.flavor ?? null,
   }));
 }
 
@@ -103,11 +108,14 @@ export async function ensureTemplatePrep(deps: ServerDeps, cwd: string): Promise
   if (existing.some((sandbox) => sandbox.name === name)) return { name, repoKey: repo.key };
   const template = templateFor(settings, repo.key);
   const args = ["create", "--name", name, "--memory", `${memoryMiB(settings, undefined, totalmem())}m`, "--no-progress"];
+  let kit = "claude";
   if (template) {
-    if (!findTemplate(await listTemplates(paths), template)) throw new Error(`template ${template} not found`);
+    const found = findTemplate(await listTemplates(paths), template);
+    if (!found) throw new Error(`template ${template} not found`);
     args.push("-t", template, "--pull", "never");
+    kit = kitForFlavor(found.flavor) ?? kit;
   }
-  await runSbxOk(paths, [...args, "claude"], `sbx create ${name}`);
+  await runSbxOk(paths, [...args, kit], `sbx create ${name}`);
   await runSbxOk(
     paths,
     ["policy", "allow", "network", "--sandbox", name, settings.networkAllow.join(",")],

@@ -1,4 +1,5 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { AGENT_IDS, type AgentId } from "../shared/agents";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,9 +21,13 @@ export interface PluginPaths {
   /** Per-session env files handed to `sbx exec --env-file`. */
   runDir: string;
   binDir: string;
-  /** Provider command: a shell launcher that runs the wrapper with the daemon's node. */
+  /** Provider command of Claude: a shell launcher that runs the wrapper with the daemon's node. */
   launcher: string;
   wrapper: string;
+  /** Agents' shared homes (`homes/<agent>`), mounted in every sandbox and catalog. */
+  homesDir: string;
+  /** Catalog sandboxes: `catalog/<agent>.json` describes one, `catalog/<agent>/` is its workspace. */
+  catalogDir: string;
   /** Per-agent sandbox bindings, so resume and history keep the sandbox they started in. */
   bindingsDir: string;
   claudeConfigs: string;
@@ -40,8 +45,10 @@ export function pluginPaths(env: NodeJS.ProcessEnv = process.env, home = homedir
     locksDir: join(root, "locks"),
     runDir: join(root, "run"),
     binDir,
-    launcher: join(binDir, "paseo-sbx-claude"),
+    launcher: launcherPath(binDir, "claude"),
     wrapper: join(binDir, "paseo-sbx-claude.cjs"),
+    homesDir: join(root, "homes"),
+    catalogDir: join(root, "catalog"),
     bindingsDir: join(root, "agents"),
     claudeConfigs: join(root, "claude"),
     defaultEnvFile: join(env.XDG_CONFIG_HOME || join(home, ".config"), "paseo-sbx", "env"),
@@ -49,10 +56,23 @@ export function pluginPaths(env: NodeJS.ProcessEnv = process.env, home = homedir
   };
 }
 
+function launcherPath(binDir: string, agent: AgentId): string {
+  return join(binDir, `paseo-sbx-${agent}`);
+}
+
+/** Provider command of an agent. Each agent has its own: some probes run only the command itself. */
+export function agentLauncher(paths: PluginPaths, agent: AgentId): string {
+  return launcherPath(paths.binDir, agent);
+}
+
 function binFiles(paths: PluginPaths) {
   return [
     // The daemon's own node runs the wrapper; it changes when the daemon is upgraded.
-    { name: "paseo-sbx-claude", source: launcherSource(process.execPath, paths.wrapper), mode: 0o755 },
+    ...AGENT_IDS.map((agent) => ({
+      name: `paseo-sbx-${agent}`,
+      source: launcherSource(process.execPath, paths.wrapper, agent),
+      mode: 0o755,
+    })),
     { name: "paseo-sbx-claude.cjs", source: WRAPPER_SOURCE, mode: 0o644 },
     { name: "loopback-forward.py", source: FORWARDER_SOURCE, mode: 0o644 },
     { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },

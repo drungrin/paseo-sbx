@@ -1,10 +1,14 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { agentByProvider } from "../shared/agents";
 import type { SandboxSettings } from "../shared/settings";
 import { PROVIDER_ID, SPEC_ENV, isExcluded } from "../shared/spec";
 import { readBinding, writeBinding } from "./bindings";
+import { daemonPort } from "./daemon";
 import type { PluginPaths } from "./paths";
 import { ensureProvider } from "./provider";
+import { storedSecrets } from "./sbx";
 import { buildSpec, copyHostTranscripts } from "./spec-builder";
 
 export interface ServerDeps {
@@ -14,23 +18,39 @@ export interface ServerDeps {
 }
 
 export function registerHooks(server: PluginServerContext, deps: ServerDeps): void {
-  // Every claude-sbx session opening (create, resume, refresh, import, history) gets its spec
-  // here; the wrapper refuses to run a session without one. A throw fails the session.
+  // Every session of a sandboxed agent (create, resume, refresh, import) gets its spec here; the
+  // wrapper refuses to run a session without one. A throw fails the session.
   server.before("agent.session_open", async ({ request }) => {
-    if (request.provider !== PROVIDER_ID) return request;
+    const agent = agentByProvider(request.provider);
+    if (!agent) return request;
     const binding = readBinding(deps.paths, request.agentId);
-    // Reading an archived agent's history runs nothing: point Paseo at the transcripts and
-    // leave the sandbox, the binding and the config dir alone.
+    const home = agent.sharedHome ? join(deps.paths.homesDir, agent.sharedHome.dir) : null;
     if (request.purpose === "history") {
-      return binding ? { ...request, env: { ...request.env, CLAUDE_CONFIG_DIR: binding.claudeConfigDir } } : request;
+      // Claude's history is files: point Paseo at the transcripts and run nothing.
+      if (agent.id === "claude") {
+        return binding ? { ...request, env: { ...request.env, CLAUDE_CONFIG_DIR: binding.claudeConfigDir } } : request;
+      }
+      // Other agents read history through their CLI. Their threads live in the shared home, which
+      // the catalog sandbox mounts too: reading them there leaves the workspace's VM alone.
+      return {
+        ...request,
+        env: { ...request.env, PASEO_SBX_ROUTE: "catalog", ...(home && agent.sharedHome ? { [agent.sharedHome.env]: home } : {}) },
+      };
     }
     const settings = await deps.readSettings();
+    const secrets = await storedSecrets(deps.paths).catch((error: unknown) => {
+      console.warn(`[paseo-sbx] could not list sbx secrets: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
     const { spec, missingEnv, rejectedEnv } = await buildSpec({
       settings,
       workspaceId: request.workspaceId,
       cwd: request.cwd,
       paths: deps.paths,
       binding,
+      agent: agent.id,
+      daemonPort: daemonPort(),
+      secrets,
     });
     if (!binding) {
       writeBinding(deps.paths, request.agentId, {
@@ -39,7 +59,7 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
         claudeConfigDir: spec.claudeConfigDir,
       });
     }
-    if (request.reason === "import") {
+    if (request.reason === "import" && agent.id === "claude") {
       copyHostTranscripts(deps.paths.hostClaudeDir, request.cwd, spec.claudeConfigDir);
     }
     if (missingEnv.length > 0) {
@@ -50,8 +70,13 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
     }
     return {
       ...request,
-      // CLAUDE_CONFIG_DIR is also what Paseo uses on the host to find this session's transcript.
-      env: { ...request.env, [SPEC_ENV]: JSON.stringify(spec), CLAUDE_CONFIG_DIR: spec.claudeConfigDir },
+      // Paseo reads on the host what these name: Claude's transcripts, Codex's prompts and skills.
+      env: {
+        ...request.env,
+        [SPEC_ENV]: JSON.stringify(spec),
+        CLAUDE_CONFIG_DIR: spec.claudeConfigDir,
+        ...(spec.agentHome ? { [spec.agentHome.env]: spec.agentHome.path } : {}),
+      },
     };
   });
 
@@ -61,7 +86,7 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
     const settings = await deps.readSettings();
     if (!settings.routeClaudeAgents) return request;
     if (isExcluded(request.config.cwd, settings.excludedPaths, homedir())) return request;
-    await ensureProvider(context.paseo, deps.paths);
+    await ensureProvider(context.paseo, deps.paths, "claude");
     return { ...request, config: { ...request.config, provider: PROVIDER_ID } };
   });
 }
