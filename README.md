@@ -52,8 +52,10 @@ Each tab folds the notes on how to read it under **How this works**. The screens
 ## Install
 
 ```bash
-paseo plugin install /path/to/paseo-sbx
+paseo plugin install github:drungrin/paseo-sbx
 ```
+
+Paseo supplies the modules the plugin imports, so it needs no build step. To run a checkout you change, install its directory instead: `paseo plugin install /path/to/paseo-sbx`.
 
 Then:
 
