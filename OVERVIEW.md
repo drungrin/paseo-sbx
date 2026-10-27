@@ -33,6 +33,14 @@ The workspace **Sandbox** panel lists the ports listening inside the VM. **Publi
 
 The **Docker Sandboxes** screen opens on the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and the agents keeping each VM running, with an **Archive** action. Its other tabs list the sandboxes, the agents with their setup and login, and the templates. The workspace **Sandbox** panel opens on the sandbox, the agents keeping it running and what needs you, such as a change that waits for a recreation, each with a link to the tab that fixes it: **Services**, **Template**, **Resources**, **Mounts** and **Variables**. It also opens a terminal inside the VM for manual checks. Settings for a repository apply to every worktree of it.
 
+## Data and downloads
+
+Agents send their prompts and tool results to their provider, Anthropic or OpenAI, or to the gateway your Claude settings name, as they do on the host. Requests leave the VM through the sbx network proxy on this host, which adds the stored secret. The plugin sends nothing anywhere else.
+
+The plugin downloads nothing when it loads. **Configure** downloads the agent's sbx kit image from Docker Hub (`docker/sandbox-templates`), and sandboxes created without a template start from that image. Templates you save stay on this host, in Paseo's sbx instance. Inside a VM, agents download what they need as they would on the host, within the network policy.
+
+Agents in a sandbox see the workspace, the mounted folders and the forwarded variables. Transcripts, catalog records and sandbox state stay under `~/.local/state/paseo-sbx`.
+
 ## Limits
 
 - Terminals, workspace scripts and services from `paseo.json` still run on the host.

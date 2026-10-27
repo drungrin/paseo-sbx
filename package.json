@@ -1,6 +1,5 @@
 {
   "name": "@drungrin/paseo-sbx",
-  "private": true,
   "version": "0.1.0",
   "files": [
     "paseo-plugin.json",
@@ -11,7 +10,13 @@
     "index.server.tsx",
     "client/",
     "server/",
-    "shared/"
+    "shared/",
+    "docs/screenshots/panel-overview.png",
+    "docs/screenshots/sandboxes-overview.png",
+    "docs/screenshots/panel-services.png",
+    "docs/screenshots/panel-template.png",
+    "docs/screenshots/sandboxes-agents.png",
+    "docs/screenshots/panel-phone.png"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

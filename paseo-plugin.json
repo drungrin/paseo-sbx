@@ -1,8 +1,16 @@
 {
   "id": "paseo-sbx",
-  "media": [],
+  "name": "Docker Sandboxes",
+  "description": "Run each workspace's Claude and Codex agents in its own Docker Sandboxes microVM.",
+  "media": [
+    "docs/screenshots/panel-overview.png",
+    "docs/screenshots/sandboxes-overview.png",
+    "docs/screenshots/panel-services.png",
+    "docs/screenshots/panel-template.png",
+    "docs/screenshots/sandboxes-agents.png",
+    "docs/screenshots/panel-phone.png"
+  ],
   "requirements": {
     "paseo": ">=0.13.0"
-  },
-  "name": "Docker Sandboxes"
+  }
 }
