@@ -1,5 +1,5 @@
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { Fragment, useId, useRef, useState, type ReactNode } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { Disclosure, Dot, Section, surface, text, tint, toneColor, type Theme, type Tone } from "./kit";
 
@@ -350,6 +350,31 @@ export function Column({ compact, children }: { compact: boolean; children: Reac
     <View style={{ flexGrow: compact ? 0 : 1, flexShrink: 1, flexBasis: compact ? "auto" : 0, minWidth: 0, gap: 16 }}>
       {children}
     </View>
+  );
+}
+
+/** Cards in two columns, filled in turn so neither runs much longer; one column on compact layouts. */
+export function Grid<Item>({
+  items,
+  keyOf,
+  render,
+  compact,
+}: {
+  items: readonly Item[];
+  keyOf(item: Item): string;
+  render(item: Item): ReactNode;
+  compact: boolean;
+}) {
+  const card = (item: Item) => <Fragment key={keyOf(item)}>{render(item)}</Fragment>;
+  if (compact) return <View style={{ gap: 16 }}>{items.map(card)}</View>;
+  return (
+    <Columns compact={false}>
+      {[0, 1].map((side) => (
+        <Column key={side} compact={false}>
+          {items.filter((_, index) => index % 2 === side).map(card)}
+        </Column>
+      ))}
+    </Columns>
   );
 }
 

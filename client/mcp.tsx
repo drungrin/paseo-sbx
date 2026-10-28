@@ -5,7 +5,7 @@ import { Text, View } from "react-native";
 import { MCP_HEADER_PATTERN, MCP_NAME_PATTERN, mcpNameFromUrl } from "../shared/mcp";
 import type { McpServerView, SignInView } from "../shared/rpc";
 import { errorMessage, mcpStatusView, plural } from "./format";
-import { Column, Columns, Empty, Figures, Frame, StatusChip } from "./frame";
+import { Empty, Figures, Frame, Grid, StatusChip } from "./frame";
 import {
   Actions,
   Button,
@@ -170,27 +170,28 @@ export function McpServersTab({
             />
             <Stat theme={theme} label="Sandboxes" value={String(data.sandboxes)} detail="Working sandboxes they load into" />
           </Figures>
-          <Columns compact={compact}>
-            {data.servers.map((server) => (
-              <Column key={server.name} compact={compact}>
-                <ServerCard
-                  server={server}
-                  sandboxes={data.sandboxes}
-                  global={global.includes(server.name)}
-                  stateHome={stateHome}
-                  theme={theme}
-                  signingIn={
-                    (signIn.start.isPending && signIn.start.variables === server.name) ||
-                    (signIn.view?.status === "waiting" && signIn.view.server === server.name)
-                  }
-                  removing={remove.isPending && remove.variables === server.name}
-                  onGlobal={(on) => attempt(choices.setGlobal(server.name, on))}
-                  onSignIn={() => signIn.start.mutate(server.name)}
-                  onRemove={() => attempt(remove.mutateAsync(server.name).then(() => choices.forget(server.name)))}
-                />
-              </Column>
-            ))}
-          </Columns>
+          <Grid
+            compact={compact}
+            items={data.servers}
+            keyOf={(server) => server.name}
+            render={(server) => (
+              <ServerCard
+                server={server}
+                sandboxes={data.sandboxes}
+                global={global.includes(server.name)}
+                stateHome={stateHome}
+                theme={theme}
+                signingIn={
+                  (signIn.start.isPending && signIn.start.variables === server.name) ||
+                  (signIn.view?.status === "waiting" && signIn.view.server === server.name)
+                }
+                removing={remove.isPending && remove.variables === server.name}
+                onGlobal={(on) => attempt(choices.setGlobal(server.name, on))}
+                onSignIn={() => signIn.start.mutate(server.name)}
+                onRemove={() => attempt(remove.mutateAsync(server.name).then(() => choices.forget(server.name)))}
+              />
+            )}
+          />
         </>
       )}
       {error ? (
@@ -562,6 +563,71 @@ function AddServer({
   );
 }
 
+/** One server's choice for the repository: the switch, where it stands in the sandbox, and whose choice it is. */
+function ChoiceCard({
+  server,
+  data,
+  choice,
+  global,
+  ready,
+  theme,
+  onChoose,
+}: {
+  server: McpServerView;
+  data: PanelTabProps["data"];
+  choice: boolean | undefined;
+  global: boolean;
+  ready: boolean;
+  theme: Theme;
+  onChoose(on: boolean | null): void;
+}) {
+  const on = choice ?? global;
+  const state = mcpLoadState(data, server.name, on);
+  const status = mcpStatusView(server);
+  return (
+    <Section
+      theme={theme}
+      overline={AUTH_LABEL[server.auth]}
+      title={server.name}
+      aside={<Pill theme={theme} tone={status.tone} dot label={status.label} />}
+    >
+      {server.url ? (
+        <Text selectable numberOfLines={1} style={mono(theme, 12, true)}>
+          {server.url}
+        </Text>
+      ) : null}
+      <SwitchRow
+        theme={theme}
+        label="On for this repository"
+        value={on}
+        disabled={!ready}
+        onValueChange={(next) => onChoose(next)}
+        hint={
+          <Text
+            numberOfLines={3}
+            style={{
+              ...text(theme, 12, "400", state.tone === "neutral"),
+              ...(state.tone === "neutral" ? {} : { color: toneColor(theme, state.tone) }),
+            }}
+          >
+            {state.label}
+          </Text>
+        }
+      />
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <Pill
+          theme={theme}
+          tone={choice === undefined ? "neutral" : "accent"}
+          label={choice === undefined ? (global ? "On for all sandboxes" : "Off by default") : "Set for this repository"}
+        />
+        {choice !== undefined ? (
+          <Button theme={theme} small kind="quiet" label="Use the default" onPress={() => onChoose(null)} />
+        ) : null}
+      </View>
+    </Section>
+  );
+}
+
 export function McpTab({ data, theme, compact, header }: PanelTabProps) {
   const servers = useMcpServers();
   const choices = useMcpChoices();
@@ -607,73 +673,22 @@ export function McpTab({ data, theme, compact, header }: PanelTabProps) {
           detail="Register them in Docker Sandboxes → MCP servers, in the sidebar. Then choose here which ones this repository loads."
         />
       ) : (
-        <Section
-          theme={theme}
-          title="Servers"
-          overline={`${plural(list.filter((server) => (own[server.name] ?? values?.mcpGlobal.includes(server.name)) === true).length, "server")} on here`}
-          gap={4}
-        >
-          <View role="list">
-            {list.map((server, index) => {
-              const choice = own[server.name];
-              const global = values?.mcpGlobal.includes(server.name) ?? false;
-              const on = choice ?? global;
-              const state = mcpLoadState(data, server.name, on);
-              const status = mcpStatusView(server);
-              return (
-                <View
-                  key={server.name}
-                  role="listitem"
-                  style={{ paddingVertical: 12, borderTopWidth: index === 0 ? 0 : 1, borderColor: theme.colors.border }}
-                >
-                  <SwitchRow
-                    theme={theme}
-                    label={server.name}
-                    value={on}
-                    disabled={!values}
-                    onValueChange={(next) => choose(server.name, next)}
-                    hint={
-                      <View style={{ gap: 6, marginTop: 2 }}>
-                        <Text
-                          numberOfLines={3}
-                          style={{
-                            ...text(theme, 12, "400", state.tone === "neutral"),
-                            ...(state.tone === "neutral" ? {} : { color: toneColor(theme, state.tone) }),
-                          }}
-                        >
-                          {state.label}
-                        </Text>
-                        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-                          <Pill
-                            theme={theme}
-                            tone={choice === undefined ? "neutral" : "accent"}
-                            label={
-                              choice === undefined
-                                ? global
-                                  ? "On for all sandboxes"
-                                  : "Off by default"
-                                : "Set for this repository"
-                            }
-                          />
-                          {status.tone === "warning" ? <Pill theme={theme} tone="warning" dot label={status.label} /> : null}
-                          {choice !== undefined ? (
-                            <Button
-                              theme={theme}
-                              small
-                              kind="quiet"
-                              label="Use the default"
-                              onPress={() => choose(server.name, null)}
-                            />
-                          ) : null}
-                        </View>
-                      </View>
-                    }
-                  />
-                </View>
-              );
-            })}
-          </View>
-        </Section>
+        <Grid
+          compact={compact}
+          items={list}
+          keyOf={(server) => server.name}
+          render={(server) => (
+            <ChoiceCard
+              server={server}
+              data={data}
+              choice={own[server.name]}
+              global={values?.mcpGlobal.includes(server.name) ?? false}
+              ready={values !== null}
+              theme={theme}
+              onChoose={(on) => choose(server.name, on)}
+            />
+          )}
+        />
       )}
       {error ? (
         <Note theme={theme} tone="danger">
