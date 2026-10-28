@@ -373,27 +373,27 @@ export type SignInView = z.infer<typeof signInSchema>;
 
 /** Starts sbx's OAuth sign-in for a server and returns its authorization page. */
 export const startMcpSignInRpc = defineRpc({
-  name: "mcp.signIn.start",
+  name: "mcp.sign-in.start",
   input: z.object({ server: z.string() }),
   output: signInSchema,
 });
 
 /** Null once the plugin forgot it (it restarted, or the sign-in ended long ago). */
 export const getMcpSignInRpc = defineRpc({
-  name: "mcp.signIn.get",
+  name: "mcp.sign-in.get",
   input: z.object({ id: z.string() }),
   output: signInSchema.nullable(),
 });
 
 /** Hands sbx the address the provider sent the browser back to, for a browser off the host. */
 export const finishMcpSignInRpc = defineRpc({
-  name: "mcp.signIn.finish",
+  name: "mcp.sign-in.finish",
   input: z.object({ id: z.string(), callbackUrl: z.string() }),
   output: signInSchema,
 });
 
 export const cancelMcpSignInRpc = defineRpc({
-  name: "mcp.signIn.cancel",
+  name: "mcp.sign-in.cancel",
   input: z.object({ id: z.string() }),
   output: z.object({ ok: z.literal(true) }),
 });
