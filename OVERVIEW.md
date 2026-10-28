@@ -8,6 +8,8 @@ Sandboxes come from a Docker Sandboxes instance that belongs to Paseo: your own 
 
 Each sandbox gets its own Claude config directory. Your settings, `CLAUDE.md`, skills, agents and rules are linked in read-only from your Claude config directory, while transcripts and state stay per sandbox. Paseo's MCP server and any loopback API endpoint your Claude settings use are relayed into the VM automatically.
 
+Other MCP servers reach agents through each sandbox's sbx MCP gateway. Register remote ones in the **MCP servers** tab of **Docker Sandboxes**, signing in with OAuth or giving an API key, and choose which load into every sandbox; a workspace's **Sandbox** panel turns each on or off for its repository. sbx signs in on this host and adds the token to the gateway's requests, so it never enters a VM.
+
 ## Setup
 
 Requires a Linux host with the Docker Sandboxes CLI (`sbx`) installed and signed in, and Paseo 0.13 or later. The `sbx` login lives in the OS keyring, which must be unlocked; on a headless host use a keyring without a password.
@@ -31,11 +33,13 @@ Turn on the agents you want under **Agents** in the plugin settings, then open *
 
 The workspace **Sandbox** panel lists the ports listening inside the VM. **Publish** makes one reachable from the host, on `127.0.0.1` by default or on every host address, with a port picked for you or fixed. That is how you check an app an agent started in the sandbox, without building it on the host. A port can be published for every sandbox of the repository, and services listening only on the VM's loopback work too.
 
-The **Docker Sandboxes** screen opens on the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and the agents keeping each VM running, with an **Archive** action. Its other tabs list the sandboxes, the agents with their setup and login, and the templates. The workspace **Sandbox** panel opens on the sandbox, the agents keeping it running and what needs you, such as a change that waits for a recreation, each with a link to the tab that fixes it: **Services**, **Template**, **Resources**, **Mounts** and **Variables**. It also opens a terminal inside the VM for manual checks. Settings for a repository apply to every worktree of it.
+The **Docker Sandboxes** screen opens on the memory the VMs hold, the host's available RAM, swap and memory pressure, with an alert past configurable thresholds, and the agents keeping each VM running, with an **Archive** action. Its other tabs list the sandboxes, the agents with their setup and login, the templates, and the MCP servers. The workspace **Sandbox** panel opens on the sandbox, the agents keeping it running and what needs you, such as a change that waits for a recreation, each with a link to the tab that fixes it: **Services**, **Template**, **Resources**, **Mounts**, **Variables** and **MCP**. It also opens a terminal inside the VM for manual checks. Settings for a repository apply to every worktree of it.
 
 ## Data and downloads
 
 Agents send their prompts and tool results to their provider, Anthropic or OpenAI, or to the gateway your Claude settings name, as they do on the host. Requests leave the VM through the sbx network proxy on this host, which adds the stored secret. The plugin sends nothing anywhere else.
+
+MCP servers you add receive the calls agents make to their tools, through the sbx gateway on this host. A sign-in is sbx's OAuth flow: the provider's page opens in your browser, and the address it then sends the browser to goes back to sbx on this host, pasted by you when that browser runs on another device. sbx keeps the tokens and API keys in the OS keyring; an API key is handed to it over stdin and is stored nowhere else. If sbx changes how it records MCP servers, **Report on GitHub** opens a prefilled issue in your browser, with paths under your home shortened to `~`; nothing is sent until you submit it.
 
 Nothing is downloaded until you allow it. **Configure** and **Update**, and a sandbox or template preparation without a template, can download the agent's sbx kit image from Docker Hub (`docker/sandbox-templates`), about 1.1 GB for Claude and 1.3 GB for Codex, so they ask first; declining runs nothing. Your answer is the **Allow downloading sbx images** setting, which you can turn off again. Sandboxes created from your templates use the local image, and templates you save stay on this host, in Paseo's sbx instance. Inside a VM, agents download what they need as they would on the host, within the network policy.
 
@@ -48,7 +52,8 @@ Agents in a sandbox see the workspace, the mounted folders and the forwarded var
 - Template, mounts, memory, CPUs and Docker disk are fixed when a sandbox is created. **Recreate** applies new ones once every agent of the sandbox is archived; it discards what runs inside the VM. Existing agents keep the sandbox they started in when you change the isolation mode.
 - Templates do not include the images of the VM's own Docker: each new sandbox pulls them again.
 - **Stop** in the panel shuts the VM's Docker down first. The automatic stop 30 seconds after the last agent, and a restart of Paseo, are abrupt for what runs inside: databases go through crash recovery on the next start.
-- Memory figures come from an internal detail of Docker Sandboxes 0.49 and show as unknown if a later version changes it. Linux only.
+- Memory figures, and which MCP servers each sandbox has loaded, come from internal details of Docker Sandboxes 0.49. A later version that changes them shows memory as unknown, and the plugin says when it cannot read the MCP record. Linux only.
+- Only remote MCP servers: a local one would run on this host, outside every sandbox.
 - Each open workspace keeps a VM running, about 1 GB of memory at idle plus its workload, and each VM has its own image cache on disk.
 - Hooks or plugins in your Claude settings that call host-only binaries fail inside the sandbox.
 - This is process isolation, not a security boundary: the default network policy allows everything and forwarded variables are visible to agents.

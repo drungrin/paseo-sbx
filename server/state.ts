@@ -25,6 +25,12 @@ export interface SandboxState {
   kind?: "template-prep";
   /** Guest ports published through relays; the wrapper reconciles sbx with this list. */
   publications?: Publication[];
+  /** MCP servers the plugin last loaded as the repository's choices. */
+  mcpAutoLoad?: string[];
+  /** MCP servers turned off while the sandbox was stopped: sbx unloads only from a running one. */
+  mcpUnload?: string[];
+  /** Why the last attempt to load or unload a server failed, by server. */
+  mcpErrors?: Record<string, string>;
 }
 
 export interface Publication {

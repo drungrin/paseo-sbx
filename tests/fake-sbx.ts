@@ -4,7 +4,9 @@ import { dirname, join } from "node:path";
 // A fake sbx that keeps sandboxes and templates in a JSON file, logs every call with the names in
 // its environment, and runs `exec` commands locally with a VM-like environment: PATH plus the
 // `--env-file` values and the `-e NAME` variables only. Like sbx 0.49, `template save` refuses a
-// running sandbox, and `exec` or `ports --publish` start a stopped one.
+// running sandbox, and `exec` or `ports --publish` start a stopped one. Its MCP servers behave
+// like sbx 0.49's: `mcp load` records the server in the gateway file sbx keeps, `mcp unload`
+// needs a running sandbox, and `mcp auth` waits for the OAuth redirect on a loopback listener.
 export const FAKE_SBX = `#!/usr/bin/env node
 const fs = require('node:fs');
 const cp = require('node:child_process');
@@ -79,6 +81,8 @@ if (args[0] === 'ls') {
   let i = 1;
   let cwd = process.cwd();
   const env = { PATH: process.env.PATH };
+  // sbx's proxy environment in the VM.
+  if (process.env.FAKE_SBX_GATEWAY_URL) env.MCP_GATEWAY_URL = process.env.FAKE_SBX_GATEWAY_URL;
   for (; i < args.length; i++) {
     if (args[i] === '-i' || args[i] === '-it') continue;
     // Commands for the guest's root (the plugin's dockerd shutdown) must never run on the
@@ -112,6 +116,88 @@ if (args[0] === 'ls') {
   process.stdin.pipe(guest.stdin);
   guest.stdin.on('error', () => {});
   guest.on('exit', (code) => process.exit(code === null ? 1 : code));
+} else if (args[0] === 'secret' && args[1] === 'set') {
+  state.secrets = state.secrets || {};
+  state.secrets[args[2]] = fs.readFileSync(0, 'utf8');
+  save();
+} else if (args[0] === 'secret' && args[1] === 'rm') {
+  if (state.secrets) delete state.secrets[args[2]];
+  save();
+} else if (args[0] === 'mcp') {
+  const path = require('node:path');
+  state.mcp = state.mcp || {};
+  state.secrets = state.secrets || {};
+  const gateways = path.join(process.env.XDG_STATE_HOME, 'sandboxes', 'sandboxes', 'sandboxd', 'mcp', 'gateways');
+  const gatewayFile = (box) => path.join(gateways, box + '.json');
+  const readGateway = (box) => { try { return JSON.parse(fs.readFileSync(gatewayFile(box), 'utf8')); } catch (error) { return { runtime_id: box }; } };
+  const writeGateway = (box, record) => { fs.mkdirSync(gateways, { recursive: true }); fs.writeFileSync(gatewayFile(box), JSON.stringify(record)); };
+  const fail = (message) => { process.stderr.write('error: ' + message + '\\n'); process.exit(1); };
+  const placeholders = (server) => server.headers.flatMap((header) => (header.match(/\\$\\{[^}]+\\}/g) || []).map((match) => match.slice(2, -1)));
+  const statusOf = (key) => {
+    const server = state.mcp[key];
+    const missing = placeholders(server).filter((placeholder) => !state.secrets['mcp:' + key + ':' + placeholder]);
+    if (missing.length > 0) return { name: key, status: 'needs-secret', detail: missing.length + ' header secret not set', next_step: 'sbx secret set mcp:' + key + ':' + missing[0] };
+    if (server.oauth && !server.authorized && server.headers.length === 0) return { name: key, status: 'needs-auth', next_step: 'sbx mcp auth ' + key };
+    return { name: key, status: 'ready' };
+  };
+  const name = args[2];
+  const server = state.mcp[name];
+  const box = args.includes('--sandbox') ? args[args.indexOf('--sandbox') + 1] : null;
+  if (args[1] === 'ls') {
+    process.stdout.write(process.env.FAKE_SBX_MCP_LS || JSON.stringify(Object.keys(state.mcp).sort().map(statusOf)));
+  } else if (args[1] === 'inspect') {
+    if (!server) fail('MCP server "' + name + '" not found');
+    const details = { name, type: 'remote', url: server.url, requires_oauth: server.oauth };
+    if (server.headers.length > 0) {
+      details.headers = server.headers.map((header) => ({ name: header.split(':')[0], value: header.slice(header.indexOf(':') + 1).trim() }));
+      details.header_secrets = placeholders(server).map((placeholder) => ({ placeholder, stored: Boolean(state.secrets['mcp:' + name + ':' + placeholder]) }));
+    }
+    process.stdout.write(JSON.stringify(details));
+  } else if (args[1] === 'add') {
+    if (server) fail('MCP server "' + name + '" is already registered');
+    const headers = args.filter((arg, index) => args[index - 1] === '--header');
+    const url = args[args.indexOf('--url') + 1];
+    state.mcp[name] = { url, headers, oauth: url.includes('oauth'), authorized: false };
+    save();
+    process.stdout.write('Registered MCP server ' + name + ' (remote)\\n');
+  } else if (args[1] === 'rm') {
+    delete state.mcp[name];
+    save();
+  } else if (args[1] === 'load') {
+    if (!server) fail('add "' + name + '" to sandbox "' + box + '": request failed: 404 Not Found: MCP server "' + name + '" is not registered');
+    if ((process.env.FAKE_SBX_MCP_FAIL || '').split(',').includes(name)) fail('add "' + name + '" to sandbox "' + box + '": request failed: 502 Bad Gateway: connect to ' + name + ': refused');
+    const record = readGateway(box);
+    record.dynamic_added_set = [...new Set([...(record.dynamic_added_set || []), name])];
+    writeGateway(box, record);
+    process.stdout.write('Loaded MCP server ' + name + ' into sandbox ' + box + '\\n');
+  } else if (args[1] === 'unload') {
+    if (state.stopped.includes(box)) fail('remove "' + name + '" from sandbox "' + box + '": request failed: 409 Conflict: no MCP gateway is running for sandbox "' + box + '"');
+    const record = readGateway(box);
+    if (!(record.dynamic_added_set || []).includes(name)) fail('remove "' + name + '" from sandbox "' + box + '": request failed: 404 Not Found: MCP server "' + name + '" is not loaded in sandbox "' + box + '"');
+    record.dynamic_added_set = record.dynamic_added_set.filter((entry) => entry !== name);
+    writeGateway(box, record);
+  } else if (args[1] === 'auth') {
+    if (!server) fail('MCP server "' + name + '" not found');
+    const expected = 'state-' + Math.random().toString(16).slice(2);
+    const listener = require('node:http').createServer((request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1');
+      response.end('done');
+      listener.close();
+      if (url.searchParams.get('state') !== expected) fail('authorize MCP server "' + name + '": CSRF state mismatch on loopback callback');
+      const current = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      current.mcp[name].authorized = true;
+      fs.writeFileSync(stateFile, JSON.stringify(current));
+      process.stdout.write('Authorized MCP server ' + name + '\\n');
+      process.exit(0);
+    });
+    listener.listen(0, '127.0.0.1', () => {
+      const redirect = encodeURIComponent('http://127.0.0.1:' + listener.address().port + '/callback');
+      process.stdout.write('OAuth scopes for MCP server "' + name + '":\\n  requested:   mcp:tools\\n');
+      process.stdout.write('Open this URL to authorize MCP server "' + name + '":\\nhttps://auth.example.test/authorize?client_id=fake&redirect_uri=' + redirect + '&response_type=code&state=' + expected + '\\n');
+    });
+  } else {
+    process.exit(2);
+  }
 } else {
   process.exit(2);
 }
@@ -129,7 +215,7 @@ export interface FakeSbx {
   env: Record<string, string>;
   calls(): SbxCall[];
   clearCalls(): void;
-  setState(state: { sandboxes?: string[]; templates?: { id: string; repository: string; tag: string }[] }): void;
+  setState(state: { sandboxes?: string[]; stopped?: string[]; templates?: { id: string; repository: string; tag: string }[] }): void;
   sandboxes(): string[];
 }
 

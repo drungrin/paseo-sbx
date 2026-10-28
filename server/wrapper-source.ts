@@ -535,6 +535,68 @@ function ensureGuestHelpers(spec, ports) {
   for (const line of output.split('\n')) if (line.trim()) log(line.trim());
 }
 
+// The MCP servers sbx's record of the sandbox's gateway lists (sbx 0.49), read as readLoadedMcp
+// in server/mcp.ts reads it: null when the record does not fit.
+function loadedMcp(spec) {
+  const dir = path.join(spec.stateHome, 'sandboxes', 'sandboxes', 'sandboxd', 'mcp', 'gateways');
+  if (!fs.existsSync(dir)) return null;
+  let record;
+  try {
+    record = JSON.parse(fs.readFileSync(path.join(dir, spec.name + '.json'), 'utf8'));
+  } catch (error) {
+    return error.code === 'ENOENT' ? [] : null;
+  }
+  if (!record || typeof record.runtime_id !== 'string') return null;
+  const set = record.dynamic_added_set;
+  if (set === undefined) return [];
+  return Array.isArray(set) && set.every(function (name) { return typeof name === 'string'; }) ? set : null;
+}
+
+// Brings the sandbox's MCP gateway to the repository's choices, with the plan of planMcp in
+// shared/mcp.ts. Loading works on a stopped VM; unloading needs it running, so a stopped one keeps
+// its unloads waiting. Failures are recorded for the workspace panel and never stop a launch.
+function reconcileMcp(spec, running) {
+  try {
+    const wanted = spec.mcpServers || [];
+    const loaded = loadedMcp(spec);
+    const state = readState(spec);
+    const before = state.mcpAutoLoad || [];
+    const off = new Set((state.mcpUnload || []).concat(before).filter(function (name) { return !wanted.includes(name); }));
+    const toLoad = wanted.filter(function (name) { return !loaded || !loaded.includes(name); });
+    const toUnload = Array.from(off).filter(function (name) { return !loaded || loaded.includes(name); });
+    if (toLoad.length === 0 && toUnload.length === 0 && before.join() === wanted.join()) return;
+    const errors = {};
+    for (const name of toLoad) {
+      const result = sbx(spec, ['mcp', 'load', name, '--sandbox', spec.name]);
+      if (result.status === 0) continue;
+      errors[name] = (result.stderr || result.stdout || '').trim() || 'exit ' + result.status;
+      log('loading MCP server ' + name + ' failed: ' + errors[name]);
+    }
+    const waiting = [];
+    for (const name of toUnload) {
+      if (!running) {
+        waiting.push(name);
+        continue;
+      }
+      const result = sbx(spec, ['mcp', 'unload', name, '--sandbox', spec.name]);
+      const output = (result.stderr || result.stdout || '').trim();
+      if (result.status === 0 || /is not loaded|is not registered/.test(output)) continue;
+      waiting.push(name);
+      errors[name] = output || 'exit ' + result.status;
+      log('unloading MCP server ' + name + ' failed: ' + errors[name]);
+    }
+    withLock(path.join(spec.locksDir, spec.name), function () {
+      const current = readState(spec);
+      current.mcpAutoLoad = wanted;
+      current.mcpUnload = waiting;
+      current.mcpErrors = errors;
+      writeState(spec, current);
+    });
+  } catch (error) {
+    log('MCP servers not applied: ' + (error && error.message ? error.message : String(error)));
+  }
+}
+
 // What the guest gets: Claude and Paseo variables from the session, the configured forwarded
 // variables, and the sandbox's own config dir.
 function guestEnv(spec) {
@@ -552,6 +614,8 @@ function guestEnv(spec) {
   env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
   if (spec.agentHome) env[spec.agentHome.env] = spec.agentHome.path;
   env.PASEO_SBX_SANDBOX = spec.name;
+  // guest-supervisor.py adds sbx's MCP gateway to Claude's MCP config; Codex's kit configures it.
+  if (spec.agent === 'claude') env.PASEO_SBX_MCP_GATEWAY = '1';
   return env;
 }
 
@@ -849,9 +913,11 @@ function main() {
     // Publications need their relays now; without any, preparing a sandbox does not enter it.
     // Home mounts then wait for the first session, or for a shell from the workspace panel.
     if (relays.length > 0) ensureGuestHelpers(spec, []);
+    reconcileMcp(spec, relays.length > 0);
     return;
   }
   ensureGuestHelpers(spec, ports);
+  reconcileMcp(spec, true);
   log('sandbox=' + spec.name + ' agent=' + spec.agent + ' cwd=' + spec.agentCwd);
   runInSandbox(spec, guest);
 }
@@ -994,12 +1060,35 @@ else:
  * its process tree is terminated. Every exit path ends with the cleanup, on the main thread.
  */
 export const SUPERVISOR_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
-import os, signal, subprocess, sys, threading, time
+import json, os, signal, subprocess, sys, threading, time
 
 GRACE = float(os.environ.get("PASEO_SBX_STOP_GRACE", "5"))
 
+
+def with_gateway(argv):
+    # sbx's own launch registers its MCP gateway in a config dir Claude does not use here: merge
+    # the same entry into Paseo's --mcp-config, or pass one of its own.
+    url = os.environ.get("MCP_GATEWAY_URL")
+    if os.environ.pop("PASEO_SBX_MCP_GATEWAY", None) != "1" or not url:
+        return argv
+    token = os.environ.get("MCP_SENTINEL_TOKEN_NAME") or "proxy-managed"
+    gateway = {"type": "http", "url": url, "headers": {"Authorization": "Bearer " + token}}
+    for index in range(len(argv) - 1):
+        if argv[index] != "--mcp-config":
+            continue
+        try:
+            config = json.loads(argv[index + 1])
+        except ValueError:
+            continue
+        servers = config.get("mcpServers") if isinstance(config, dict) else None
+        if isinstance(servers, dict):
+            servers.setdefault("mcp-gateway", gateway)
+            return argv[: index + 1] + [json.dumps(config)] + argv[index + 2 :]
+    return argv + ["--mcp-config", json.dumps({"mcpServers": {"mcp-gateway": gateway}})]
+
+
 try:
-    child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, start_new_session=True)
+    child = subprocess.Popen(with_gateway(sys.argv[1:]), stdin=subprocess.PIPE, start_new_session=True)
 except FileNotFoundError:
     sys.stderr.write("[paseo-sbx] %s is not in this sandbox: its template lacks it. Add it to the template, or pick one built for it\n" % sys.argv[1])
     sys.exit(127)

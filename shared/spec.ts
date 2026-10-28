@@ -53,6 +53,8 @@ export interface SandboxSpec {
   forwardPorts: number[];
   /** Guest ports of the repository published on ephemeral host ports at every launch. */
   autoPublish: number[];
+  /** MCP servers the plugin loads into the sandbox's gateway (`mcpAutoLoad`); absent from older plugins. */
+  mcpServers?: string[];
   env: Record<string, string>;
   claudeConfigDir: string;
 }

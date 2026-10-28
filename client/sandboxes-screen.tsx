@@ -42,10 +42,12 @@ import {
   type Theme,
   type Tone,
 } from "./kit";
+import { McpServersTab } from "./mcp";
 import {
   useArchiveAgent,
   useConfigureAgent,
   useInvalidateAll,
+  useMcpServers,
   useMemory,
   useRemoveTemplate,
   useSandboxAction,
@@ -58,9 +60,10 @@ interface SandboxesScreenProps extends PluginScreenProps {
   openSettings(): void;
 }
 
-type ScreenTab = "overview" | "sandboxes" | "agents" | "templates";
+type ScreenTab = "overview" | "sandboxes" | "agents" | "templates" | "mcp";
 type Status = NonNullable<ReturnType<typeof useStatus>["data"]>;
 type Memory = NonNullable<ReturnType<typeof useMemory>["data"]>;
+type McpServers = NonNullable<ReturnType<typeof useMcpServers>["data"]>;
 
 /** Ready to run sessions: provider registered and current, catalog sandbox created and answering. */
 const agentReady = (agent: AgentStatus) => agent.provider.current && agent.catalog.exists && agent.catalog.cliVersion !== null;
@@ -77,6 +80,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
   const sandboxes = useSandboxes();
   const memory = useMemory();
   const templates = useTemplates();
+  const mcp = useMcpServers();
   const settings = useSettings(sandboxSettings);
   const [tab, setTab] = useState<ScreenTab>("overview");
   const [width, setWidth] = useState<number | null>(null);
@@ -92,7 +96,9 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
           small
           label={fetching ? "Refreshing" : "Refresh"}
           busy={fetching}
-          onPress={() => void Promise.all([status.refetch(), sandboxes.refetch(), memory.refetch(), templates.refetch()])}
+          onPress={() =>
+            void Promise.all([status.refetch(), sandboxes.refetch(), memory.refetch(), templates.refetch(), mcp.refetch()])
+          }
         />
         <Button theme={theme} small label="Settings" onPress={openSettings} />
       </>
@@ -102,7 +108,8 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
   const custom = (templates.data?.templates ?? []).filter((template) => !template.base);
   const agentsNeedingSetup = status.data?.agents.filter((agent) => agent.enabled && !agentReady(agent)).length ?? 0;
   const legacy = settings.status === "ready" ? Object.keys(settings.values.legacyOverrides).length : 0;
-  const needs = screenNeeds(status.data, memory.data, legacy, setTab);
+  const needs = screenNeeds(status.data, memory.data, mcp.data, legacy, setTab);
+  const mcpWaiting = mcp.data?.servers.filter((server) => server.status !== "ready").length ?? 0;
   const tabs: Tab<ScreenTab>[] = [
     {
       id: "overview",
@@ -125,6 +132,16 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
       badge: agentsNeedingSetup > 0 ? { label: String(agentsNeedingSetup), tone: "warning" } : null,
     },
     { id: "templates", label: "Templates", badge: templates.data ? { label: String(custom.length) } : null },
+    {
+      id: "mcp",
+      label: "MCP servers",
+      badge:
+        mcpWaiting > 0 || mcp.data?.unrecognized
+          ? { label: String(mcpWaiting || 1), tone: "warning" }
+          : mcp.data
+            ? { label: String(mcp.data.servers.length) }
+            : null,
+    },
   ];
 
   return (
@@ -210,6 +227,9 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
               </Frame>
             );
           }
+          if (id === "mcp") {
+            return <McpServersTab theme={theme} compact={compact} header={header} stateHome={status.data?.stateHome ?? null} />;
+          }
           if (id === "agents") {
             return (
               <Frame
@@ -267,6 +287,7 @@ function SbxChip({ status, error, theme }: { status: Status | undefined; error: 
 function screenNeeds(
   status: Status | undefined,
   memory: Memory | undefined,
+  mcp: McpServers | undefined,
   legacy: number,
   go: (tab: ScreenTab) => void,
 ): Need[] {
@@ -299,6 +320,31 @@ function screenNeeds(
         action: { label: "Agents", onPress: () => go("agents") },
       });
     }
+  }
+  for (const server of mcp?.servers ?? []) {
+    if (server.status === "needs-auth") {
+      needs.push({
+        tone: "warning",
+        title: `${server.name} needs a sign-in`,
+        detail: "Until then agents see only its sign-in tool.",
+        action: { label: "MCP servers", onPress: () => go("mcp") },
+      });
+    } else if (server.status === "needs-secret") {
+      needs.push({
+        tone: "warning",
+        title: `${server.name} has no API key stored`,
+        detail: "Its card in MCP servers shows the command that stores it.",
+        action: { label: "MCP servers", onPress: () => go("mcp") },
+      });
+    }
+  }
+  if (mcp?.unrecognized) {
+    needs.push({
+      tone: "warning",
+      title: "sbx changed how it reports MCP servers",
+      detail: "MCP servers says what this means and how to report it.",
+      action: { label: "MCP servers", onPress: () => go("mcp") },
+    });
   }
   if (legacy > 0) {
     needs.push({

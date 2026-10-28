@@ -5,7 +5,7 @@ import type { Description } from "./queries";
 
 /** What the workspace panel's tabs share, and what it reads off a sandbox's description. */
 
-export type PanelTab = "overview" | "services" | "template" | "resources" | "mounts" | "variables";
+export type PanelTab = "overview" | "services" | "template" | "resources" | "mounts" | "variables" | "mcp";
 
 export interface PanelTabProps {
   data: Description;
@@ -104,6 +104,23 @@ export function panelNeeds(data: Description): PanelNeed[] {
       tab: "variables",
     });
   }
+  const failedMcp = Object.keys(data.mcp.errors);
+  if (failedMcp.length > 0) {
+    needs.push({
+      tone: "warning",
+      title: `${plural(failedMcp.length, "MCP server")} could not be loaded or unloaded`,
+      detail: failedMcp.join(", "),
+      tab: "mcp",
+    });
+  }
+  if (data.mcp.unreadable) {
+    needs.push({
+      tone: "warning",
+      title: "sbx changed how it records MCP servers",
+      detail: "The MCP tab says what this means and how to report it.",
+      tab: "mcp",
+    });
+  }
   if (data.status === "running") {
     const unpublished = data.services.publications.filter((publication) => publication.hostPort === null);
     if (unpublished.length > 0) {
@@ -128,6 +145,7 @@ export function panelBadges(data: Description): Record<PanelTab, TabBadge> {
   const missingEnv = data.env.filter((entry) => !entry.present && !entry.reserved).length;
   const unpublished =
     data.status === "running" ? data.services.publications.filter((publication) => publication.hostPort === null).length : 0;
+  const mcpProblems = Object.keys(data.mcp.errors).length + (data.mcp.unreadable ? 1 : 0);
   const needs = panelNeeds(data).length;
   return {
     overview:
@@ -152,5 +170,23 @@ export function panelBadges(data: Description): Record<PanelTab, TabBadge> {
         : data.env.length > 0
           ? { label: String(data.env.length) }
           : null,
+    mcp:
+      mcpProblems > 0
+        ? { label: String(mcpProblems), tone: "warning" }
+        : data.mcp.autoLoad.length > 0
+          ? { label: String(data.mcp.autoLoad.length) }
+          : null,
   };
+}
+
+/** Where a server stands in this sandbox, against what the repository chose. */
+export function mcpLoadState(data: Description, name: string, on: boolean): { label: string; tone: Tone } {
+  const error = data.mcp.errors[name];
+  if (error) return { label: `Could not ${on ? "load" : "unload"} it: ${error}`, tone: "danger" };
+  if (data.mcp.pendingUnload.includes(name)) return { label: "Unloads when the sandbox next starts", tone: "warning" };
+  if (data.status === null) return { label: on ? "Loads when the sandbox is created" : "Off", tone: "neutral" };
+  const loaded = data.mcp.loaded;
+  if (loaded === null) return { label: on ? "On" : "Off", tone: "neutral" };
+  if (loaded.includes(name)) return on ? { label: "Loaded", tone: "success" } : { label: "Loaded by an agent", tone: "neutral" };
+  return on ? { label: "Loading…", tone: "accent" } : { label: "Off", tone: "neutral" };
 }

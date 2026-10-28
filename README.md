@@ -18,6 +18,7 @@ A panel beside each workspace, in tabs. Each tab's badge counts what it holds, o
 - **Resources**: memory and CPUs for the repository's sandboxes.
 - **Mounts**: every host folder the sandbox sees, where it comes from and whether it waits for a recreation; the repository's own mounts, added one at a time; and the GSD Path members.
 - **Variables**: the host variables forwarded to sessions, whether each has a value, and the repository's own.
+- **MCP**: which MCP servers the repository's sandboxes load, each on for all sandboxes or set for this repository, and whether it is loaded, loading, waiting for the sandbox to start, or failed.
 
 | Services | Template |
 | --- | --- |
@@ -33,12 +34,15 @@ Opened from the sidebar, for every sandbox at once.
 - **Sandboxes**: every VM the plugin created, grouped into workspaces, template preparations and agent catalogs, with **Stop** and **Remove**.
 - **Agents**: Claude and Codex, each with its CLI version, catalog sandbox, provider and login, the command that stores its login, and **Configure** or **Update**.
 - **Templates**: the saved templates, their size, the repositories and sandboxes that use them, and **Remove** for the ones nothing uses.
+- **MCP servers**: the remote MCP servers agents reach through sbx's gateway, each with its sign-in status, an **On for all sandboxes** switch and how many sandboxes have it loaded. **Add a server** takes its address and an OAuth sign-in or an API key; **Sign in** shows the provider's page and takes back the address the browser ends on, for a browser on another device.
 
 | Overview | Sandboxes |
 | --- | --- |
 | ![Overview: host memory split between the sandbox VMs, everything else and what is available, and the agents keeping each VM running](docs/screenshots/sandboxes-overview.png) | ![Sandboxes tab: workspace sandboxes, a template preparation and the agent catalogs](docs/screenshots/sandboxes-list.png) |
 | **Agents** | **Templates** |
 | ![Agents tab: Claude and Codex with their CLI version, catalog sandbox, provider and login](docs/screenshots/sandboxes-agents.png) | ![Templates tab: saved templates with their size and the repositories using them](docs/screenshots/sandboxes-templates.png) |
+| **MCP servers** | **Signing in from another device** |
+| ![MCP servers tab: three remote servers with their sign-in, the switch that loads each into every sandbox, how many sandboxes have it, and the form to add one](docs/screenshots/sandboxes-mcp.png) | ![A sign-in: the provider's page to open, and a field for the address the browser ends on](docs/screenshots/sandboxes-mcp-sign-in.png) |
 
 Each tab folds the notes on how to read it under **How this works**. The screens follow Paseo's light and dark themes and fit a phone.
 
@@ -71,8 +75,8 @@ Then:
 | --- | --- | --- |
 | Plugin server | Paseo daemon | Settings, the `agent.session_open` hook that builds each session's sandbox spec, the optional `agent.create` hook that routes `claude` to `claude-sbx`, RPCs for the UI |
 | Launchers (`paseo-sbx-claude`, `paseo-sbx-codex`) | Host, the registered provider commands | Run the wrapper with the daemon's own Node (in Node mode when the daemon runs inside Electron), naming the agent |
-| Wrapper (`paseo-sbx-claude.cjs`) | Host | Creates the sandbox, reconciles its network policy, starts the loopback relay, runs the agent's CLI from the template inside the VM; sends runs without a session to the agent's catalog sandbox |
-| `guest-supervisor.py` | Sandbox | Feeds Claude's stdin and stops its process tree when the session ends |
+| Wrapper (`paseo-sbx-claude.cjs`) | Host | Creates the sandbox, reconciles its network policy and MCP servers, starts the loopback relay, runs the agent's CLI from the template inside the VM; sends runs without a session to the agent's catalog sandbox |
+| `guest-supervisor.py` | Sandbox | Adds sbx's MCP gateway to Claude's MCP config, feeds Claude's stdin and stops its process tree when the session ends |
 | `loopback-forward.py` | Sandbox | Relays guest `127.0.0.1:<port>` to the host's loopback |
 | `guest-agent.py` | Sandbox | Runs the relays of published ports and reports the guest's listening ports |
 
@@ -84,7 +88,7 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - `claude/<sandbox>/`: per-sandbox Claude config directories. Paseo reads transcripts here for history and rewind.
 - `catalog/<agent>.json` and `catalog/<agent>/`: each agent's catalog sandbox (name, the kit's CLI version, what its runs need) and its workspace.
 - `homes/<agent>/`: agents' homes shared by every sandbox and the catalog, at the same path inside them (Codex's `CODEX_HOME`).
-- `sandboxes/<sandbox>.json`: how each sandbox was created (repository, template and its image ID, memory, CPUs, Docker disk, mounts) and the network rules applied to it. Removing a rule from the settings revokes it on the next launch.
+- `sandboxes/<sandbox>.json`: how each sandbox was created (repository, template and its image ID, memory, CPUs, Docker disk, mounts), the network rules applied to it, and the MCP servers the plugin loaded into it or still has to unload. Removing a rule from the settings revokes it on the next launch.
 - `locks/`: per-sandbox locks, the leases of running sessions, and the marker of a recreation in progress.
 - `run/`: per-session env files, private to your user and never mounted.
 - `agents/<agent>.json`: the sandbox each agent first opened in. Resume, refresh and history reuse it, so changing the isolation mode does not move existing agents or their transcripts.
@@ -109,6 +113,8 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - **Docker disk per sandbox.** sbx sizes `/var/lib/docker` from `sandbox.disk.dockerVolume`, a setting shared by every sbx instance of your user. The plugin passes `DOCKER_SANDBOXES_DOCKER_SIZE` to `sbx create` instead, so your own sandboxes keep sbx's size. The volume is sparse on the host.
 - **Memory without entering the VM.** Each VM's resident memory is read from its `containerd-shim-nerdbox-v1` process, matched to the sandbox through the `config.json` in the process's working directory. Any `sbx exec` would postpone the auto-stop, and polling through it would keep VMs running.
 - **Every publication goes through a relay.** sbx publishes only what listens on the VM's external interface, and dev servers often listen on loopback. The guest agent listens on a port of its own (41000-41999) and forwards to the service's port on the guest loopback, which also reaches services listening on `0.0.0.0`. Its own port keeps it from blocking the service if the service later binds every address. The agent writes the listening ports to the sandbox's Claude config dir, the one mount both sides can write, so the panel lists them without `sbx exec`; the host reads that file as untrusted input. Publications are kept per sandbox and reconciled at every launch; a repository's auto-published ports are added there. Each gets an explicit host port, picked when you leave it empty: sbx 0.49 restores publications at every start and keeps an ephemeral one in a form `--unpublish` cannot remove, so it would come back after each restart. An explicit port is removed for good and keeps the URL stable.
+- **MCP servers through sbx's gateway.** Every sandbox has an MCP gateway on the host side of the VM; sbx keeps the servers' tokens and API keys and adds them to the gateway's requests. Only remote servers: a local one would run on the host, outside every sandbox. sbx registers the gateway in its kit's own Claude config, which plugin sessions do not use, so the guest supervisor merges the same entry into the MCP config Paseo passes. sbx has no command that lists what a local sandbox loaded; the plugin reads sbx's record of it and says when that record changes shape instead of guessing. Unloading needs a running VM, so a server turned off while a sandbox is stopped is unloaded at its next launch. Off means the plugin does not load it: agents can still add any registered server with the gateway's `mcp-add` tool.
+- **Sign-ins on any device.** Without a display, `sbx mcp auth` prints the provider's page and waits on a loopback listener for the redirect. A browser on another device lands on an address only this host can open; you paste it back and the plugin delivers it to sbx. It accepts only an address with that sign-in's loopback port, path and `state`, so a paste never makes it request anything else, and a stale one cannot end the sign-in (sbx aborts on a wrong `state`).
 - **No stop on archive.** Archiving an agent closes its runtime, and the VM stops 30 seconds after its last session. What keeps VMs running is agents that are not archived; the plugin API cannot close their runtimes, so the Docker Sandboxes screen lists them with an Archive action.
 - **Invalid settings fail instead of defaulting.** Falling back to defaults could silently turn routing off or reopen the network policy. The plugin keeps the last valid settings it read; without any, `claude-sbx` sessions and routed agent creation fail with a message pointing to the settings screen.
 
@@ -132,6 +138,7 @@ Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_`
 - **A build dies with exit code 137**: the VM ran out of memory. Give the repository more memory or fewer CPUs in the **Resources** tab of its **Sandbox** panel, then recreate the sandbox.
 - **Tests fail with "No space left on device"** from a database in the VM's Docker: raise **Docker disk per sandbox**, then recreate the sandbox.
 - **A published port shows "not published"**: its host port was taken when the sandbox started. Pick another fixed port, or leave it empty.
+- **An MCP server's tools do not show in an agent**: check its status in **MCP servers** (until you sign in, a server offers only its sign-in tool) and its switch in the workspace's **MCP** tab. Sessions started before this version reach no gateway: start them again.
 - **Wrapper logs** appear in the daemon log as Claude Agent SDK stderr lines prefixed with `[paseo-sbx]`.
 
 ## Development

@@ -26,6 +26,8 @@ const repoConfigSchema = z.object({
   envNames: z.array(z.string()).default([]),
   /** Guest ports published on ephemeral host ports whenever a sandbox of the repo is prepared. */
   autoPublish: z.array(z.number().int().min(1).max(65535)).default([]),
+  /** MCP servers this repo's sandboxes load (true) or skip (false), over `mcpGlobal`. */
+  mcp: z.record(z.string(), z.boolean()).optional(),
 });
 export type RepoConfig = z.infer<typeof repoConfigSchema>;
 
@@ -88,6 +90,11 @@ export const sandboxSettingsSchema = z.object({
    * member checkouts listed in `.project/MEMBERS.md`, writable.
    */
   gsdPath: z.boolean().default(true),
+  /**
+   * MCP servers registered in the Paseo sbx instance that every sandbox loads into its gateway,
+   * existing and new ones, unless its repository turns them off.
+   */
+  mcpGlobal: z.array(z.string()).default([]),
   repos: z.record(z.string(), repoConfigSchema).default({}),
   /** Keyed by the version 1 sandbox key; shown in the Docker Sandboxes screen until resolved. */
   legacyOverrides: z.record(z.string(), legacyOverrideSchema).default({}),

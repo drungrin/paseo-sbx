@@ -1,3 +1,4 @@
+import type { McpServerView } from "../shared/rpc";
 import type { Tone } from "./kit";
 
 /** `docker.io/library/name:tag` as `name:tag`, the way you typed it. */
@@ -75,4 +76,12 @@ export function operationLabel(kind: string): string {
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** sbx's status of an MCP server, in words. */
+export function mcpStatusView(server: McpServerView): { label: string; tone: Tone } {
+  if (server.status === "ready") return { label: "Ready", tone: "success" };
+  if (server.status === "needs-auth") return { label: "Needs sign-in", tone: "warning" };
+  if (server.status === "needs-secret") return { label: "API key missing", tone: "warning" };
+  return { label: server.detail ?? server.status, tone: "neutral" };
 }

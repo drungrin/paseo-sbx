@@ -532,6 +532,7 @@ export function Field({
   placeholder,
   theme,
   monospace = false,
+  secure = false,
   width,
   onSubmit,
 }: ThemeProps & {
@@ -542,6 +543,8 @@ export function Field({
   onChangeText(value: string): void;
   placeholder?: string;
   monospace?: boolean;
+  /** Hides what is typed: keys and passwords. */
+  secure?: boolean;
   width?: number;
   onSubmit?(): void;
 }) {
@@ -557,6 +560,7 @@ export function Field({
         placeholderTextColor={tint(theme, theme.colors.foregroundMuted, 0.55)}
         autoCapitalize="none"
         autoCorrect={false}
+        secureTextEntry={secure}
         onChangeText={onChangeText}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
@@ -583,7 +587,7 @@ export function Field({
   );
 }
 
-/** A setting that is on or off, its label beside the switch. */
+/** A setting that is on or off, its label beside the switch; a hint that is not text is laid out as given. */
 export function SwitchRow({
   label,
   hint,
@@ -591,12 +595,12 @@ export function SwitchRow({
   onValueChange,
   theme,
   disabled,
-}: ThemeProps & { label: string; hint?: string; value: boolean; onValueChange(value: boolean): void; disabled?: boolean }) {
+}: ThemeProps & { label: string; hint?: ReactNode; value: boolean; onValueChange(value: boolean): void; disabled?: boolean }) {
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={text(theme, 14, "500")}>{label}</Text>
-        {hint ? <Text style={text(theme, 12, "400", true)}>{hint}</Text> : null}
+        {typeof hint === "string" ? <Text style={text(theme, 12, "400", true)}>{hint}</Text> : (hint ?? null)}
       </View>
       <Switch
         accessibilityLabel={label}

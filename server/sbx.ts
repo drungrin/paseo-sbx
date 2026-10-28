@@ -25,15 +25,19 @@ export function sbxEnv(paths: PluginPaths, extra: NodeJS.ProcessEnv = {}): NodeJ
   return { ...env, ...extra, XDG_STATE_HOME: paths.stateHome };
 }
 
-/** Runs the sbx CLI against the Paseo-only instance. Never throws for a non-zero exit. */
+/**
+ * Runs the sbx CLI against the Paseo-only instance. Never throws for a non-zero exit. `input`
+ * goes to its stdin: values that must not appear on a command line.
+ */
 export function runSbx(
   paths: PluginPaths,
   args: string[],
   timeoutMs = 60_000,
   extraEnv: NodeJS.ProcessEnv = {},
+  input?: string,
 ): Promise<SbxResult> {
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       "sbx",
       args,
       {
@@ -48,6 +52,7 @@ export function runSbx(
         resolve({ code, stdout: stdout ?? "", stderr: stderr || (error?.message ?? "") });
       },
     );
+    if (input !== undefined) child.stdin?.end(input);
   });
 }
 

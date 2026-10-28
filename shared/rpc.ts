@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AGENT_IDS } from "./agents";
+import { MCP_HEADER_PATTERN, MCP_NAME_PATTERN } from "./mcp";
 import { MOUNT_SOURCES } from "./spec";
 
 const operationSchema = z.object({
@@ -193,6 +194,18 @@ export const describeSandboxRpc = defineRpc({
         }),
       ),
     }),
+    mcp: z.object({
+      /** Servers the plugin loads into the repository's sandboxes. */
+      autoLoad: z.array(z.string()),
+      /** Servers the sandbox's gateway has loaded, by the plugin or an agent; null when unknown. */
+      loaded: z.array(z.string()).nullable(),
+      /** Why `loaded` is unknown when sbx's record of it could not be read; null otherwise. */
+      unreadable: z.string().nullable(),
+      /** Servers turned off while the sandbox was stopped: unloaded when it next starts. */
+      pendingUnload: z.array(z.string()),
+      /** Why loading or unloading a server failed, by server. */
+      errors: z.record(z.string(), z.string()),
+    }),
   }),
 });
 
@@ -298,3 +311,89 @@ export const finishTemplateRpc = defineRpc({
 
 export const shellResultSchema = shellSchema;
 export const refResultSchema = z.object({ ref: z.string() });
+
+const mcpServerSchema = z.object({
+  name: z.string(),
+  url: z.string().nullable(),
+  /** sbx's status: "ready", "needs-auth", "needs-secret", or one it adds later. */
+  status: z.string(),
+  detail: z.string().nullable(),
+  /** The sbx command that fixes its status (`sbx secret set mcp:…`), when sbx names one. */
+  nextStep: z.string().nullable(),
+  /** How it signs in: OAuth through sbx, an API key in a header, or not at all. */
+  auth: z.enum(["oauth", "api-key", "none"]),
+  /** Sandboxes whose gateway has it loaded. */
+  loadedIn: z.array(z.string()),
+});
+export type McpServerView = z.infer<typeof mcpServerSchema>;
+
+/** The MCP servers registered in the Paseo sbx instance. */
+export const listMcpServersRpc = defineRpc({
+  name: "mcp.servers.list",
+  input: z.object({}),
+  output: z.object({
+    servers: z.array(mcpServerSchema),
+    /** Working sandboxes: the ones servers load into. */
+    sandboxes: z.number(),
+    /** What the plugin could not read from sbx (its format changed); null when it read everything. */
+    unrecognized: z.string().nullable(),
+  }),
+});
+
+/** Registers a remote server. Without an API key, one that uses OAuth then needs a sign-in. */
+export const addMcpServerRpc = defineRpc({
+  name: "mcp.servers.add",
+  input: z.object({
+    name: z.string().regex(MCP_NAME_PATTERN),
+    url: z.string(),
+    /** Sent in `header` on every request; the value goes to sbx's secret store only. */
+    apiKey: z.object({ header: z.string().regex(MCP_HEADER_PATTERN), value: z.string().min(1) }).nullable(),
+  }),
+  output: mcpServerSchema,
+});
+
+/** Unloads the server from every sandbox, then removes it with its credentials. */
+export const removeMcpServerRpc = defineRpc({
+  name: "mcp.servers.remove",
+  input: z.object({ name: z.string() }),
+  output: z.object({ ok: z.literal(true) }),
+});
+
+const signInSchema = z.object({
+  id: z.string(),
+  server: z.string(),
+  /** The provider's authorization page; null when sbx opened a browser on the host instead. */
+  url: z.string().nullable(),
+  /** Where the provider sends the browser back, on the Paseo host (`http://127.0.0.1:<port>`). */
+  callbackOrigin: z.string().nullable(),
+  status: z.enum(["waiting", "done", "failed", "cancelled"]),
+  error: z.string().nullable(),
+});
+export type SignInView = z.infer<typeof signInSchema>;
+
+/** Starts sbx's OAuth sign-in for a server and returns its authorization page. */
+export const startMcpSignInRpc = defineRpc({
+  name: "mcp.signIn.start",
+  input: z.object({ server: z.string() }),
+  output: signInSchema,
+});
+
+/** Null once the plugin forgot it (it restarted, or the sign-in ended long ago). */
+export const getMcpSignInRpc = defineRpc({
+  name: "mcp.signIn.get",
+  input: z.object({ id: z.string() }),
+  output: signInSchema.nullable(),
+});
+
+/** Hands sbx the address the provider sent the browser back to, for a browser off the host. */
+export const finishMcpSignInRpc = defineRpc({
+  name: "mcp.signIn.finish",
+  input: z.object({ id: z.string(), callbackUrl: z.string() }),
+  output: signInSchema,
+});
+
+export const cancelMcpSignInRpc = defineRpc({
+  name: "mcp.signIn.cancel",
+  input: z.object({ id: z.string() }),
+  output: z.object({ ok: z.literal(true) }),
+});

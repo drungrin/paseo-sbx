@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { panelBadges, panelNeeds } from "../client/panel";
+import { mcpLoadState, panelBadges, panelNeeds } from "../client/panel";
 import type { Description } from "../client/queries";
 
 function description(overrides: Partial<Description> = {}): Description {
@@ -27,6 +27,7 @@ function description(overrides: Partial<Description> = {}): Description {
     siblings: [],
     operations: [],
     services: { snapshotAt: null, listeners: [], publications: [] },
+    mcp: { autoLoad: [], loaded: [], unreadable: null, pendingUnload: [], errors: {} },
     ...overrides,
   };
 }
@@ -119,6 +120,38 @@ describe("panelBadges", () => {
       resources: null,
       mounts: { label: "1" },
       variables: { label: "1 missing", tone: "warning" },
+      mcp: null,
     });
+  });
+});
+
+describe("MCP in the workspace panel", () => {
+  const mcp = {
+    autoLoad: ["docs"],
+    loaded: ["docs", "own"],
+    unreadable: null,
+    pendingUnload: ["old"],
+    errors: { broken: "502 Bad Gateway" },
+  };
+
+  it("tells a loaded server from one an agent loaded, one waiting and one that failed", () => {
+    const data = description({ mcp });
+    expect(mcpLoadState(data, "docs", true)).toEqual({ label: "Loaded", tone: "success" });
+    expect(mcpLoadState(data, "own", false)).toEqual({ label: "Loaded by an agent", tone: "neutral" });
+    expect(mcpLoadState(data, "new", true)).toEqual({ label: "Loading…", tone: "accent" });
+    expect(mcpLoadState(data, "old", false).label).toBe("Unloads when the sandbox next starts");
+    expect(mcpLoadState(data, "broken", true)).toEqual({ label: "Could not load it: 502 Bad Gateway", tone: "danger" });
+    expect(mcpLoadState(description({ status: null }), "docs", true).label).toBe("Loads when the sandbox is created");
+    expect(mcpLoadState(description({ mcp: { ...mcp, loaded: null, errors: {} } }), "docs", true).label).toBe("On");
+  });
+
+  it("asks for attention on failures and on an sbx record it cannot read", () => {
+    const needs = panelNeeds(description({ mcp: { ...mcp, unreadable: "gateways/x.json: runtime_id: Required" } }));
+    expect(needs.map((need) => [need.title, need.tab])).toEqual([
+      ["1 MCP server could not be loaded or unloaded", "mcp"],
+      ["sbx changed how it records MCP servers", "mcp"],
+    ]);
+    expect(panelBadges(description({ mcp })).mcp).toEqual({ label: "1", tone: "warning" });
+    expect(panelBadges(description({ mcp: { ...mcp, errors: {} } })).mcp).toEqual({ label: "1" });
   });
 });

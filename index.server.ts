@@ -1,7 +1,10 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { mcpChoicesKey } from "./shared/mcp";
 import { sandboxSettings, type SandboxSettings } from "./shared/settings";
 import { registerHandlers } from "./server/handlers";
 import { registerHooks } from "./server/hooks";
+import { applyMcpChoices } from "./server/mcp";
+import { cancelAllSignIns } from "./server/mcp-signin";
 import { installBinFiles, pluginPaths } from "./server/paths";
 import { migrateSettings } from "./server/settings-migration";
 import { reconcileRecreatingMarkers } from "./server/state";
@@ -34,5 +37,25 @@ export default function contribute(server: PluginServerContext) {
 
   registerHooks(server, { paths, readSettings });
   registerHandlers(server, { paths, readSettings });
-  return () => {};
+
+  // A changed MCP choice reaches the existing sandboxes at once, one change after another. The
+  // choices at startup are only recorded: launches bring each sandbox to them (the wrapper).
+  let mcpKey: string | null = null;
+  let applying = Promise.resolve();
+  void settings.read().then((state) => {
+    if (state.status === "ready") mcpKey ??= mcpChoicesKey(state.values);
+  });
+  const unsubscribe = settings.subscribe((state) => {
+    if (state.status !== "ready") return;
+    const key = mcpChoicesKey(state.values);
+    if (key === mcpKey) return;
+    mcpKey = key;
+    applying = applying
+      .then(() => applyMcpChoices(paths, state.values))
+      .catch((error) => console.warn(`[paseo-sbx] applying MCP choices: ${error instanceof Error ? error.message : error}`));
+  });
+  return () => {
+    unsubscribe();
+    cancelAllSignIns();
+  };
 }

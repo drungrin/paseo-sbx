@@ -836,3 +836,87 @@ describe("Codex sessions", () => {
     expect(result.stderr).toContain("predates shared agent homes");
   });
 });
+
+describe("MCP servers", () => {
+  const GATEWAY_URL = "http://mcp-gateway.docker.internal/mcp";
+  const GATEWAY = { type: "http", url: GATEWAY_URL, headers: { Authorization: "Bearer proxy-managed" } };
+
+  function register(names: string[], extra: Record<string, unknown> = {}) {
+    const mcp = Object.fromEntries(names.map((name) => [name, { url: `https://${name}.example/mcp`, headers: [], oauth: false }]));
+    writeFileSync(join(root, "sbx-state.json"), JSON.stringify({ mcp, ...extra }));
+  }
+  const gatewayFile = (sandbox: SandboxSpec) =>
+    join(sandbox.stateHome, "sandboxes", "sandboxes", "sandboxd", "mcp", "gateways", `${sandbox.name}.json`);
+  const loaded = (sandbox: SandboxSpec) => JSON.parse(readFileSync(gatewayFile(sandbox), "utf8")).dynamic_added_set;
+  const state = (sandbox: SandboxSpec) => JSON.parse(readFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), "utf8"));
+  const mcpCalls = (result: Run) => result.calls.filter((call) => call.args[0] === "mcp").map((call) => call.args.join(" "));
+
+  it("loads the repository's servers at launch and unloads the ones turned off since", () => {
+    register(["docs", "search"]);
+    const sandbox = spec({ mcpServers: ["docs", "search"] });
+    const first = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(first.status).toBe(0);
+    expect(loaded(sandbox)).toEqual(["docs", "search"]);
+    expect(state(sandbox)).toEqual(expect.objectContaining({ mcpAutoLoad: ["docs", "search"], mcpUnload: [], mcpErrors: {} }));
+
+    const again = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(mcpCalls(again)).toEqual([]);
+
+    const fewer = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec({ mcpServers: ["docs"] })) } });
+    expect(mcpCalls(fewer)).toEqual([`mcp unload search --sandbox ${sandbox.name}`]);
+    expect(loaded(sandbox)).toEqual(["docs"]);
+  });
+
+  it("keeps unloads waiting while a prepared sandbox is stopped, and never fails a launch over MCP", () => {
+    const sandbox = spec({ mcpServers: ["broken"] });
+    register(["docs", "broken"], { sandboxes: [sandbox.name], stopped: [sandbox.name] });
+    mkdirSync(dirname(gatewayFile(sandbox)), { recursive: true });
+    writeFileSync(gatewayFile(sandbox), JSON.stringify({ runtime_id: sandbox.name, dynamic_added_set: ["docs"] }));
+    mkdirSync(sandbox.stateDir, { recursive: true });
+    writeFileSync(join(sandbox.stateDir, `${sandbox.name}.json`), JSON.stringify({ mcpAutoLoad: ["docs"] }));
+
+    const prepared = run(["--paseo-sbx-ensure"], { env: { [SPEC_ENV]: JSON.stringify(sandbox), FAKE_SBX_MCP_FAIL: "broken" } });
+    expect(prepared.status).toBe(0);
+    expect(prepared.stderr).toContain("loading MCP server broken failed");
+    expect(mcpCalls(prepared)).toEqual([`mcp load broken --sandbox ${sandbox.name}`]);
+    expect(state(sandbox)).toEqual(
+      expect.objectContaining({ mcpUnload: ["docs"], mcpErrors: { broken: expect.stringContaining("502 Bad Gateway") } }),
+    );
+
+    // A session starts the VM: the unload goes through and the load is tried again.
+    const session = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } });
+    expect(session.status).toBe(0);
+    expect(loaded(sandbox)).toEqual(["broken"]);
+    expect(state(sandbox)).toEqual(expect.objectContaining({ mcpAutoLoad: ["broken"], mcpUnload: [], mcpErrors: {} }));
+  });
+
+  it("gives Claude sbx's gateway, merged into Paseo's MCP config", () => {
+    const sandbox = spec();
+    const paseo = { type: "http", url: "http://127.0.0.1:6767/mcp/agents" };
+    const env = { [SPEC_ENV]: JSON.stringify(sandbox), FAKE_SBX_GATEWAY_URL: GATEWAY_URL };
+    const merged = JSON.parse(run(["--mcp-config", JSON.stringify({ mcpServers: { paseo } }), "--model", "m"], { env }).stdout);
+    expect(merged.args.filter((arg: string) => arg === "--mcp-config")).toHaveLength(1);
+    expect(JSON.parse(merged.args[merged.args.indexOf("--mcp-config") + 1]).mcpServers).toEqual({ paseo, "mcp-gateway": GATEWAY });
+    expect(merged.args.slice(-2)).toEqual(["--model", "m"]);
+    expect(merged.env.PASEO_SBX_MCP_GATEWAY).toBeUndefined();
+
+    const alone = JSON.parse(run(["--model", "m"], { env }).stdout);
+    expect(alone.args.slice(0, 3)).toEqual(["--model", "m", "--mcp-config"]);
+    expect(JSON.parse(alone.args[3])).toEqual({ mcpServers: { "mcp-gateway": GATEWAY } });
+
+    // No gateway in the VM, or an agent whose kit configures it: the arguments stay as they came.
+    expect(JSON.parse(run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(sandbox) } }).stdout).args).toEqual(["--model", "m"]);
+    const homesDir = join(root, "state", "homes");
+    const codex = spec({
+      name: "paseo-codex-0000abcd",
+      agent: "codex",
+      binary: "codex",
+      kit: "codex",
+      agentHome: { env: "CODEX_HOME", path: join(homesDir, "codex") },
+      homesDir,
+      mounts: [homesDir],
+    });
+    const codexRun = run(["app-server"], { env: { [SPEC_ENV]: JSON.stringify(codex), FAKE_SBX_GATEWAY_URL: GATEWAY_URL }, input: "{}\n" });
+    expect(JSON.parse(codexRun.stdout).args).toEqual(["app-server"]);
+  });
+});

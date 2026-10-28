@@ -13,6 +13,7 @@ import {
 import { homedir, totalmem } from "node:os";
 import { join, relative } from "node:path";
 import { AGENTS, type AgentId } from "../shared/agents";
+import { mcpAutoLoad } from "../shared/mcp";
 import type { SandboxSettings } from "../shared/settings";
 import {
   SPEC_VERSION,
@@ -309,6 +310,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     networkAllow: settings.networkAllow,
     forwardPorts: input.daemonPort ? [...new Set([...settings.forwardPorts, input.daemonPort])] : settings.forwardPorts,
     autoPublish: repo?.autoPublish ?? [],
+    mcpServers: mcpAutoLoad(settings, repoKey),
     env: forwarded,
     claudeConfigDir,
   };

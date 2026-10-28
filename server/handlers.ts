@@ -2,19 +2,26 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { existsSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
 import {
+  addMcpServerRpc,
+  cancelMcpSignInRpc,
   configureAgentRpc,
   describeSandboxRpc,
+  finishMcpSignInRpc,
   finishTemplateRpc,
+  getMcpSignInRpc,
   getOperationRpc,
+  listMcpServersRpc,
   listSandboxesRpc,
   listTemplatesRpc,
   memoryRpc,
   prepareTemplateRpc,
   publishPortRpc,
+  removeMcpServerRpc,
   removeTemplateRpc,
   sandboxActionRpc,
   saveTemplateRpc,
   shellCommandRpc,
+  startMcpSignInRpc,
   statusRpc,
   unpublishPortRpc,
 } from "../shared/rpc";
@@ -26,6 +33,8 @@ import { catalogName } from "../shared/spec";
 import { catalogStatus, ensureCatalog } from "./catalog";
 import { disableUnusedProviders, ensureProvider, providerStatus } from "./provider";
 import { activeAgentsBySandbox } from "./agents";
+import { addMcpServer, listMcpServers, readLoadedMcp, removeMcpServer } from "./mcp";
+import { cancelSignIn, finishSignIn, getSignIn, startSignIn } from "./mcp-signin";
 import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
 import { getOperation, operationsFor, runOperation } from "./operations";
 import { actualPublications, internalPorts, publishPort, readListeners, unpublishPort } from "./ports";
@@ -183,8 +192,22 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
         .map((entry) => entry.name),
       operations: operationsFor([spec.name, templatePrepName(repo.key, repo.root)]),
       services: await services(spec.name, spec.claudeConfigDir, Boolean(sandbox)),
+      mcp: mcpState(spec.name, spec.mcpServers ?? [], sandbox?.status ?? null, state),
     };
   });
+
+  /** What the sandbox's gateway has against the repository's MCP choices; nothing before it exists. */
+  function mcpState(name: string, autoLoad: string[], status: string | null, state: SandboxState | null) {
+    const exists = status !== null;
+    const record = exists ? readLoadedMcp(paths, name, status === "running") : { loaded: [], unreadable: null };
+    return {
+      autoLoad,
+      loaded: record.loaded,
+      unreadable: record.unreadable,
+      pendingUnload: exists ? (state?.mcpUnload ?? []) : [],
+      errors: exists ? (state?.mcpErrors ?? {}) : {},
+    };
+  }
 
   async function services(name: string, claudeConfigDir: string, exists: boolean) {
     const state = readSandboxState(paths, name);
@@ -294,4 +317,24 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
   server.handle(finishTemplateRpc, ({ name, tag }) =>
     runOperation("save-template", name, async () => ({ ref: await finishTemplatePrep(paths, name, tag) })),
   );
+
+  server.handle(listMcpServersRpc, () => listMcpServers(paths));
+
+  server.handle(addMcpServerRpc, (input) => addMcpServer(paths, input));
+
+  server.handle(removeMcpServerRpc, async ({ name }) => {
+    await removeMcpServer(paths, name);
+    return { ok: true as const };
+  });
+
+  server.handle(startMcpSignInRpc, ({ server: name }) => startSignIn(paths, name));
+
+  server.handle(getMcpSignInRpc, ({ id }) => getSignIn(id));
+
+  server.handle(finishMcpSignInRpc, ({ id, callbackUrl }) => finishSignIn(id, callbackUrl));
+
+  server.handle(cancelMcpSignInRpc, ({ id }) => {
+    cancelSignIn(id);
+    return { ok: true as const };
+  });
 }
