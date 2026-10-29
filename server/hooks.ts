@@ -10,7 +10,7 @@ import type { PluginPaths } from "./paths";
 import { ensureProvider } from "./provider";
 import { storedSecrets } from "./sbx";
 import { buildSpec, copyHostTranscripts } from "./spec-builder";
-import { rememberWorkspaceSandbox } from "./workspaces";
+import { backfillWorkspaceRecords, recordWorkspace, rememberWorkspaceSandbox } from "./workspaces";
 
 export interface ServerDeps {
   paths: PluginPaths;
@@ -53,8 +53,9 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
       daemonPort: daemonPort(),
       secrets,
     });
+    // The workspace's sandbox for the Sandbox terminal, kept current by every session.
+    rememberWorkspaceSandbox(deps.paths, request.workspaceId, spec);
     if (!binding) {
-      rememberWorkspaceSandbox(deps.paths, request.workspaceId, spec);
       writeBinding(deps.paths, request.agentId, {
         key: spec.key,
         name: spec.name,
@@ -80,6 +81,16 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
         ...(spec.agentHome ? { [spec.agentHome.env]: spec.agentHome.path } : {}),
       },
     };
+  });
+
+  // A new workspace gets its record at once; older ones are filled from the first agent turn.
+  server.on("workspace.created", async ({ workspace }) => {
+    await recordWorkspace(deps.paths, await deps.readSettings(), workspace.id, workspace.cwd).catch((error: unknown) => {
+      console.warn(`[paseo-sbx] recording ${workspace.id} for the Sandbox terminal: ${error instanceof Error ? error.message : error}`);
+    });
+  });
+  server.on("agent.turn_started", (_event, { paseo }) => {
+    void backfillWorkspaceRecords(deps.paths, deps.readSettings, paseo);
   });
 
   // Internal helper agents skip this hook, so they keep their configured provider.

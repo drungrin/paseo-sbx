@@ -52,7 +52,7 @@ import {
 } from "./spec-builder";
 import { readSandboxState, type SandboxState } from "./state";
 import { ensureTerminalProfile } from "./terminal-profile";
-import { rememberWorkspaceSandbox } from "./workspaces";
+import { backfillWorkspaceRecords, rememberWorkspaceSandbox } from "./workspaces";
 import {
   ensureTemplatePrep,
   findTemplate,
@@ -106,6 +106,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
   const { paths } = deps;
 
   server.handle(statusRpc, async (_input, { paseo }) => {
+    void backfillWorkspaceRecords(paths, deps.readSettings, paseo);
     const settings = await deps.readSettings();
     await ensureTerminalProfile(paseo, paths).catch(warnTerminalProfile);
     await disableUnusedProviders(paseo, settings);

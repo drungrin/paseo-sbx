@@ -94,7 +94,7 @@ State lives under `~/.local/state/paseo-sbx` (respects `XDG_STATE_HOME`):
 - `sandboxes/<sandbox>.json`: how each sandbox was created (repository, template and its image ID, memory, CPUs, Docker disk, mounts), the network rules applied to it, and the MCP servers the plugin loaded into it or still has to unload. Removing a rule from the settings revokes it on the next launch.
 - `locks/`: per-sandbox locks, the leases of running sessions, and the marker of a recreation in progress.
 - `run/`: per-session env files, private to your user and never mounted.
-- `workspaces/<workspace>.json`: the spec last built for each workspace, without its variables, which the Sandbox terminal reads.
+- `workspaces/<workspace>.json`: the spec last built for each workspace, without its variables, which the Sandbox terminal reads. Every session and every new workspace writes it; workspaces from before it existed are filled once per plugin start, at the first agent turn or Docker Sandboxes view.
 - `agents/<agent>.json`: the sandbox each agent first opened in. Resume, refresh and history reuse it, so changing the isolation mode does not move existing agents or their transcripts.
 
 ### Design decisions

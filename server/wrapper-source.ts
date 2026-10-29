@@ -991,7 +991,16 @@ function main() {
 try {
   main();
 } catch (error) {
-  fail(error instanceof WrapperError ? error.message : (error && error.stack) || String(error));
+  const message = error instanceof WrapperError ? error.message : (error && error.stack) || String(error);
+  if (args[0] === SHELL_FLAG && process.stdin.isTTY) {
+    // Paseo closes a terminal whose command exits: keep the reason on screen until it is read.
+    log(message);
+    process.stderr.write('Press Enter to close this terminal.\n');
+    process.stdin.once('data', function () { process.exit(1); });
+    process.stdin.resume();
+  } else {
+    fail(message);
+  }
 }
 `;
 
