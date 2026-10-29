@@ -280,7 +280,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths });
     return runOperation("prepare", spec.name, async () => {
       await prepareSandbox(paths, spec);
-      return { name: spec.name, ...shellCommand(paths, spec.name, { homeMounts: spec.homeMounts }) };
+      return { name: spec.name, ...shellCommand(paths, spec.name, { title: "Sandbox", homeMounts: spec.homeMounts }) };
     });
   });
 
@@ -310,7 +310,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const repo = await repoIdentity(directory);
     return runOperation("prepare-template", templatePrepName(repo.key, repo.root), async () => {
       const prep = await ensureTemplatePrep(deps, directory);
-      return { name: prep.name, repoKey: prep.repoKey, ...shellCommand(paths, prep.name, { noHistory: true }) };
+      return { name: prep.name, repoKey: prep.repoKey, ...shellCommand(paths, prep.name, { title: "Template prep", noHistory: true }) };
     });
   });
 

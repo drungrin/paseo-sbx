@@ -254,7 +254,8 @@ export const memoryRpc = defineRpc({
   }),
 });
 
-const shellSchema = z.object({ name: z.string(), command: z.string(), args: z.array(z.string()) });
+/** `name` is the sandbox; `title` names the terminal tab. */
+const shellSchema = z.object({ name: z.string(), title: z.string(), command: z.string(), args: z.array(z.string()) });
 
 /** Result: the shell (`{ name, command, args }`). */
 export const shellCommandRpc = defineRpc({

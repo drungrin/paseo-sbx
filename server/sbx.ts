@@ -228,14 +228,16 @@ export function prepareSandbox(paths: PluginPaths, spec: SandboxSpec, lockToken?
 }
 
 /**
- * A login shell in the sandbox; `noHistory` keeps it from writing a shell history to save in a
- * template. `homeMounts` are applied first, as a session's launch does.
+ * A login shell in the sandbox, for a terminal tab named `title`; `noHistory` keeps it from
+ * writing a shell history to save in a template. `homeMounts` are applied first, as a session's
+ * launch does. The tab shows the title its process sets, else the command line, so the command
+ * sets `title` (OSC 0) before entering the VM, whose shell sets none.
  */
 export function shellCommand(
   paths: PluginPaths,
   name: string,
-  options: { noHistory?: boolean; homeMounts?: readonly HomeMount[] } = {},
-): { command: string; args: string[] } {
+  options: { title: string; noHistory?: boolean; homeMounts?: readonly HomeMount[] },
+): { title: string; command: string; args: string[] } {
   const historyArgs = options.noHistory ? ["-e", "HISTFILE=/dev/null"] : [];
   const mounts = (options.homeMounts ?? []).flatMap((mount) => [mount.name, mount.target]);
   const shell =
@@ -243,8 +245,21 @@ export function shellCommand(
       ? ["sh", "-c", 'sh "$0" "$@"; exec bash -l', join(paths.binDir, "home-mounts.sh"), ...mounts]
       : ["bash", "-l"];
   return {
-    command: "env",
-    args: [`XDG_STATE_HOME=${paths.stateHome}`, "sbx", "exec", "-it", ...historyArgs, name, ...shell],
+    title: options.title,
+    command: "sh",
+    args: [
+      "-c",
+      'printf "\\033]0;%s\\007" "$0"; exec "$@"',
+      options.title,
+      "env",
+      `XDG_STATE_HOME=${paths.stateHome}`,
+      "sbx",
+      "exec",
+      "-it",
+      ...historyArgs,
+      name,
+      ...shell,
+    ],
   };
 }
 

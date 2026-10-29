@@ -11,7 +11,7 @@ import type { ServerDeps } from "../server/hooks";
 import { installBinFiles, pluginPaths, type PluginPaths } from "../server/paths";
 import { recreateSandbox } from "../server/recreate";
 import { publishPort, readListeners, unpublishPort } from "../server/ports";
-import { listSandboxes, prepareSandbox, stopSandbox } from "../server/sbx";
+import { listSandboxes, prepareSandbox, shellCommand, stopSandbox } from "../server/sbx";
 import { buildSpec } from "../server/spec-builder";
 import { processStart, readSandboxState, writeSandboxState } from "../server/state";
 import { ensureTemplatePrep, finishTemplatePrep, removeTemplate, saveTemplate } from "../server/templates";
@@ -311,5 +311,16 @@ describe("templates", () => {
     expect(await finishTemplatePrep(paths, first.name, "app:clean")).toBe("docker.io/library/app:clean");
     expect(fake.sandboxes()).not.toContain(first.name);
     expect(readSandboxState(paths, first.name)).toBeNull();
+  });
+});
+
+describe("sandbox shell", () => {
+  it("names its terminal tab before entering the VM", () => {
+    const shell = shellCommand(paths, "paseo-app-00000001", { title: "Sandbox" });
+    expect(shell.title).toBe("Sandbox");
+    expect(shell.args.slice(3, 8)).toEqual(["env", `XDG_STATE_HOME=${paths.stateHome}`, "sbx", "exec", "-it"]);
+    // The script sets the title (OSC 0), then runs the rest: here a stand-in for sbx.
+    const output = execFileSync(shell.command, [...shell.args.slice(0, 3), "echo", "in the VM"], { encoding: "utf8" });
+    expect(output).toBe("\x1b]0;Sandbox\x07in the VM\n");
   });
 });

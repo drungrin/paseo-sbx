@@ -110,7 +110,7 @@ export function useSandboxAction() {
 }
 
 interface Shell {
-  name: string;
+  title: string;
   command: string;
   args: string[];
 }
@@ -118,8 +118,7 @@ interface Shell {
 /** Opens a sandbox shell as a Paseo terminal of the workspace. */
 export function useOpenTerminal(workspaceId: string) {
   const paseo = usePaseo();
-  return (shell: Shell) =>
-    paseo.terminals.create({ workspaceId, name: `sbx ${shell.name}`, command: shell.command, args: shell.args });
+  return (shell: Shell) => paseo.terminals.create({ workspaceId, name: shell.title, command: shell.command, args: shell.args });
 }
 
 export function useArchiveAgent() {
