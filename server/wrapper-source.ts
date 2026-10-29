@@ -24,6 +24,7 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 const SPEC_ENV = 'PASEO_SBX_SPEC';
 const SPEC_VERSION = 3;
 const ENSURE_FLAG = '--paseo-sbx-ensure';
+const SHELL_FLAG = '--paseo-sbx-shell';
 // The agent this launcher serves; the launcher sets it, Paseo's arguments arrive untouched.
 const AGENT = process.env.PASEO_SBX_AGENT || 'claude';
 delete process.env.PASEO_SBX_AGENT;
@@ -341,8 +342,8 @@ function collectLoopbackPorts(text, into) {
 }
 
 // Loopback services the session talks to: Paseo's MCP server (--mcp-config), API base URLs in
-// the session environment (including forwarded variables), and anything the shared Claude
-// settings point at.
+// the session environment (including forwarded variables and your Claude settings' env), and
+// anything the sandbox's own Claude settings point at.
 function detectPorts(spec, env) {
   const ports = new Set(spec.forwardPorts);
   args.forEach(function (arg, index) {
@@ -510,15 +511,18 @@ function homeMountArgs(spec) {
   return pairs;
 }
 
-// One exec per launch: mounts into the guest's home, relays guest loopback ports to the
-// host (Paseo's MCP server, loopback API URLs) and keeps the guest agent running. The VM stops
+// One exec per launch: starts the sandbox's own Claude settings from the kit's, mounts into the
+// guest's home, relays guest loopback ports to the host (Paseo's MCP server, loopback API URLs)
+// and keeps the guest agent running. The VM stops
 // 30 s after its last session and takes the relays and the agent with it, so this runs per launch.
 function ensureGuestHelpers(spec, ports) {
   const script = [
     'dir=$0',
     'state=$1',
     'ports=$2',
-    'shift 2',
+    'config=$3',
+    'shift 3',
+    'python3 "$dir/seed-claude-settings.py" "$config"',
     'sh "$dir/home-mounts.sh" "$@"',
     'missing=""',
     'if [ -n "$ports" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $ports); fi',
@@ -529,7 +533,9 @@ function ensureGuestHelpers(spec, ports) {
   ].join('\n');
   const output = sbxOk(
     spec,
-    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' ')].concat(homeMountArgs(spec)),
+    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' '), spec.claudeConfigDir].concat(
+      homeMountArgs(spec),
+    ),
     'guest helpers',
   );
   for (const line of output.split('\n')) if (line.trim()) log(line.trim());
@@ -599,6 +605,24 @@ function reconcileMcp(spec, running) {
 
 // What the guest gets: Claude and Paseo variables from the session, the configured forwarded
 // variables, and the sandbox's own config dir.
+// Your Claude settings stay on the host, out of every VM; their env (a gateway's URL and token,
+// a key) reaches each run through its private env file, read fresh at every launch.
+function hostSettingsEnv(file) {
+  const env = {};
+  if (!file) return env;
+  let settingsEnv;
+  try {
+    settingsEnv = JSON.parse(fs.readFileSync(file, 'utf8')).env || {};
+  } catch (error) {
+    if (error.code !== 'ENOENT') log('could not read ' + file + ': ' + error.message);
+    return env;
+  }
+  for (const name of Object.keys(settingsEnv)) {
+    if (typeof settingsEnv[name] === 'string' && !isReserved(name)) env[name] = settingsEnv[name];
+  }
+  return env;
+}
+
 function guestEnv(spec) {
   const env = {};
   for (const name of Object.keys(process.env)) {
@@ -607,6 +631,7 @@ function guestEnv(spec) {
       env[name] = process.env[name];
     }
   }
+  if (spec.agent === 'claude') Object.assign(env, hostSettingsEnv(spec.hostClaudeSettings));
   for (const name of Object.keys(spec.env)) {
     if (isReserved(name)) log('not forwarding reserved variable ' + name);
     else env[name] = spec.env[name];
@@ -803,8 +828,6 @@ function answerVersion(catalog) {
   warm.unref();
 }
 
-// Claude's settings stay on the host, out of the catalog VM; their env (a gateway's URL and
-// token) reaches only this run, through the private env file.
 function catalogEnv(catalog) {
   const env = {};
   for (const name of Object.keys(process.env)) {
@@ -813,16 +836,7 @@ function catalogEnv(catalog) {
       env[name] = process.env[name];
     }
   }
-  if (catalog.hostSettings) {
-    try {
-      const settingsEnv = JSON.parse(fs.readFileSync(catalog.hostSettings, 'utf8')).env || {};
-      for (const name of Object.keys(settingsEnv)) {
-        if (typeof settingsEnv[name] === 'string' && !isReserved(name)) env[name] = settingsEnv[name];
-      }
-    } catch (error) {
-      log('could not read ' + catalog.hostSettings + ': ' + error.message);
-    }
-  }
+  Object.assign(env, hostSettingsEnv(catalog.hostSettings));
   if (catalog.claudeConfigDir) env.CLAUDE_CONFIG_DIR = catalog.claudeConfigDir;
   if (catalog.agentHome) env[catalog.agentHome.env] = catalog.agentHome.path;
   return env;
@@ -876,7 +890,59 @@ function readSpec() {
   return spec;
 }
 
+// The Sandbox terminal profile's shell: a login shell in the workspace's sandbox, in the
+// workspace, created when missing. The spec is the one the plugin last built for the workspace
+// (PASEO_WORKSPACE_ID, set in every Paseo terminal), recorded without its variables. The tab
+// shows the title its process sets, else this command line, and the VM's shell sets none.
+function shellMain() {
+  process.stdout.write('\x1b]0;Sandbox\x07');
+  const workspaceId = process.env.PASEO_WORKSPACE_ID || '';
+  if (!/^[A-Za-z0-9_-]+$/.test(workspaceId)) {
+    throw new WrapperError('the Sandbox terminal runs in a workspace terminal: PASEO_WORKSPACE_ID is missing');
+  }
+  let spec;
+  try {
+    spec = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'workspaces', workspaceId + '.json'), 'utf8'));
+  } catch (error) {
+    throw new WrapperError(
+      "this workspace's sandbox is not known yet: open its Sandbox dashboard once, or run Open sandbox terminal from the command center",
+    );
+  }
+  if (spec.version !== SPEC_VERSION) throw new WrapperError('the workspace record is from another plugin version: open its Sandbox dashboard once');
+  removeOrphanEnvFiles(spec);
+  checkRecreating(spec);
+  ensureSandbox(spec);
+  const guest = shellEnv(spec);
+  const ports = detectPorts(spec, guest);
+  ensurePolicy(spec, ports);
+  const relays = withLock(path.join(spec.locksDir, spec.name), function () { return reconcilePublications(spec, ports); });
+  writeRelays(spec, relays, ports);
+  ensureGuestHelpers(spec, ports);
+  reconcileMcp(spec, true);
+  const envFile = writeEnvFile(spec, guest);
+  const envArgs = ['--env-file', envFile.file];
+  for (const name of Object.keys(envFile.inline)) envArgs.push('-e', name);
+  const rcfile = path.join(spec.binDir, 'paseo-sbx-shellrc');
+  const child = cp.spawn('sbx', ['exec', '-it', '-w', spec.workspace].concat(envArgs, [spec.name, 'bash', '--rcfile', rcfile, '-i']), {
+    stdio: 'inherit',
+    env: Object.assign(managementEnv(spec), envFile.inline),
+  });
+  relaySignals(function (signal) { child.kill(signal); });
+  child.on('exit', exitLikeChild);
+}
+
+// What a session gets, for whichever agent you start by hand: Claude's config dir and your
+// Claude settings' env (your login), and Codex's shared home. The workspace record holds no
+// forwarded values, so variables from the variables file are not here.
+function shellEnv(spec) {
+  const env = guestEnv(Object.assign({}, spec, { agent: 'claude', agentHome: null }));
+  delete env.PASEO_SBX_MCP_GATEWAY;
+  env.CODEX_HOME = path.join(spec.homesDir, 'codex');
+  return env;
+}
+
 function main() {
+  if (args[0] === SHELL_FLAG) return shellMain();
   const spec = readSpec();
   if (!spec) {
     // A session always gets a spec from the plugin. One without (plugin disabled or failed)
@@ -911,7 +977,7 @@ function main() {
   writeRelays(spec, relays, ports);
   if (args[0] === ENSURE_FLAG) {
     // Publications need their relays now; without any, preparing a sandbox does not enter it.
-    // Home mounts then wait for the first session, or for a shell from the workspace panel.
+    // Home mounts then wait for the first session, or for the Sandbox terminal.
     if (relays.length > 0) ensureGuestHelpers(spec, []);
     reconcileMcp(spec, relays.length > 0);
     return;
@@ -943,6 +1009,68 @@ export function launcherSource(nodeBinary: string, wrapperPath: string, agent: s
     "",
   ].join("\n");
 }
+
+/** Command of the Sandbox terminal profile: the wrapper's shell mode, with the daemon's node. */
+export function shellLauncherSource(nodeBinary: string, wrapperPath: string): string {
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  return [
+    "#!/bin/sh",
+    "# Written by the paseo-sbx Paseo plugin. Do not edit: the plugin rewrites it on startup.",
+    `ELECTRON_RUN_AS_NODE=1 exec ${quote(nodeBinary)} ${quote(wrapperPath)} --paseo-sbx-shell`,
+    "",
+  ].join("\n");
+}
+
+// The Sandbox terminal's bash: a login shell's startup, then claude with sbx's MCP gateway,
+// as sessions get it from guest-supervisor.py. Commands that open no session are left alone.
+export const SHELL_RC_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+[ -f /etc/profile ] && . /etc/profile
+for profile in ~/.bash_profile ~/.bash_login ~/.profile; do
+  if [ -f "$profile" ]; then . "$profile"; break; fi
+done
+claude() {
+  case "$1" in
+    agents|attach|auth|auto-mode|config|doctor|gateway|import|install|logs|mcp|migrate-installer|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade)
+      command claude "$@"
+      return
+      ;;
+  esac
+  if [ -z "$MCP_GATEWAY_URL" ]; then
+    command claude "$@"
+    return
+  fi
+  token=$MCP_SENTINEL_TOKEN_NAME
+  [ -n "$token" ] || token=proxy-managed
+  command claude --mcp-config "{\"mcpServers\":{\"mcp-gateway\":{\"type\":\"http\",\"url\":\"$MCP_GATEWAY_URL\",\"headers\":{\"Authorization\":\"Bearer $token\"}}}}" "$@"
+}
+`;
+
+// Each sandbox keeps its own Claude settings: they start as the kit's (sbx writes them in the
+// guest home at creation), and from then on Claude in the sandbox owns them, plugins and all.
+// The kit's apiKeyHelper is left out: sessions get the sbx secret's marker from the plugin.
+export const SEED_SETTINGS_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+import json
+import os
+import sys
+
+config = sys.argv[1] if len(sys.argv) > 1 else ""
+target = os.path.join(config, "settings.json")
+kit = os.path.expanduser("~/.claude/settings.json")
+if config and os.path.isdir(config) and not os.path.lexists(target):
+    try:
+        with open(kit) as source:
+            settings = json.load(source)
+    except (OSError, ValueError):
+        settings = {}
+    if not isinstance(settings, dict):
+        settings = {}
+    settings.pop("apiKeyHelper", None)
+    temp = target + ".%d.tmp" % os.getpid()
+    with open(temp, "w") as out:
+        json.dump(settings, out, indent=2)
+        out.write("\n")
+    os.replace(temp, target)
+`;
 
 /**
  * Bind-mounts host-home mounts into the guest's home: arguments are NAME TARGET pairs, NAME relative

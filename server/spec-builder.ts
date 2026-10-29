@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import {
+  type Stats,
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -7,14 +10,17 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  renameSync,
+  statSync,
   symlinkSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join, relative } from "node:path";
 import { AGENTS, type AgentId } from "../shared/agents";
 import { mcpAutoLoad } from "../shared/mcp";
-import type { SandboxSettings } from "../shared/settings";
+import { LEGACY_CLAUDE_SHARED, type SandboxSettings } from "../shared/settings";
 import {
   SPEC_VERSION,
   formatMount,
@@ -101,20 +107,36 @@ export function envFilePath(settings: SandboxSettings, paths: PluginPaths, home 
 
 const CLAUDE_LOGIN_VARIABLES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
 
+export interface ClaudeLogin {
+  /** Where the login sessions get comes from; null when only the sbx secret could sign in. */
+  source: "settings" | "environment" | "unreadable" | null;
+  /** The login variables found there (names only). */
+  names: string[];
+  /** Your Claude settings sign in with an `apiKeyHelper`, which sessions run only from a shared settings.json. */
+  helper: boolean;
+}
+
 /**
- * Whether Claude signs in on its own: a key, a gateway token or a cloud provider in the daemon's
- * environment or your Claude settings, or an `apiKeyHelper`. Unreadable settings count as yes,
- * so the sbx secret never replaces a login that works.
+ * How Claude signs in on its own: a key, a gateway token or a cloud provider in the daemon's
+ * environment or in your Claude settings' `env` (which every session gets), or an `apiKeyHelper`
+ * when your settings.json itself is shared. Unreadable settings count as a login, so the sbx
+ * secret never replaces one that works.
  */
-function hasOwnClaudeLogin(env: NodeJS.ProcessEnv, paths: PluginPaths): boolean {
-  if (CLAUDE_LOGIN_VARIABLES.some((name) => env[name])) return true;
+export function claudeLogin(env: NodeJS.ProcessEnv, paths: PluginPaths, settingsShared: boolean): ClaudeLogin {
+  const fromEnvironment = CLAUDE_LOGIN_VARIABLES.filter((name) => env[name]);
+  if (fromEnvironment.length > 0) return { source: "environment", names: fromEnvironment, helper: false };
   let settings: { env?: Record<string, unknown>; apiKeyHelper?: unknown };
   try {
     settings = JSON.parse(readFileSync(join(paths.hostClaudeDir, "settings.json"), "utf8"));
   } catch (error) {
-    return !(error instanceof Error && "code" in error && error.code === "ENOENT");
+    const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
+    return { source: missing ? null : "unreadable", names: [], helper: false };
   }
-  return Boolean(settings.apiKeyHelper) || CLAUDE_LOGIN_VARIABLES.some((name) => settings.env?.[name]);
+  const names = CLAUDE_LOGIN_VARIABLES.filter((name) => settings.env?.[name]);
+  if (typeof settings.env?.ANTHROPIC_BASE_URL === "string" && names.length > 0) names.push("ANTHROPIC_BASE_URL");
+  const helper = Boolean(settings.apiKeyHelper);
+  if (names.length > 0 || (helper && settingsShared)) return { source: "settings", names, helper };
+  return { source: null, names: [], helper };
 }
 
 /** Appends an entry to git's config-by-environment list (`GIT_CONFIG_COUNT`, `_KEY_<n>`, `_VALUE_<n>`). */
@@ -134,41 +156,136 @@ export function templateFor(settings: SandboxSettings, repoKey: string): string 
   return settings.repos[repoKey]?.template || settings.template || null;
 }
 
+const SHARED_COPIES = join(".paseo-sbx", "shared-copies.json");
+
+function sha256(data: Buffer | string): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
+}
+
+/** Writes through a temp file in the same dir, so Claude never reads half a file. */
+function writeAtomic(path: string, data: Buffer | string, mode: number): void {
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, data, { mode });
+  chmodSync(temp, mode);
+  renameSync(temp, path);
+}
+
 /**
- * Per-sandbox Claude config dir: writable state (`.claude.json`, transcripts) stays separate per
- * sandbox, while the shared items are symlinks into the host config dir mounted read-only.
+ * Per-sandbox Claude config dir: writable state (`.claude.json`, `settings.json`, transcripts)
+ * stays separate per sandbox. Shared folders are symlinks into the host config dir, mounted
+ * read-only. Shared files are copied instead, read-only, at every session: a file mount keeps the
+ * inode it started with, and Claude (or an editor) saving a file by renaming a new one over it
+ * leaves the sandbox with an unreadable mount until it restarts. The record of what was copied
+ * tells the plugin's copies from files Claude or you put there.
  * Paseo reads transcripts through the session's CLAUDE_CONFIG_DIR, so rewind keeps working.
  */
 export function prepareClaudeConfigDir(dir: string, hostClaudeDir: string, shared: readonly string[]): void {
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(join(dir, ".paseo-sbx"), { recursive: true });
+  const recordPath = join(dir, SHARED_COPIES);
+  let copies: Record<string, string> = {};
+  try {
+    copies = JSON.parse(readFileSync(recordPath, "utf8"));
+  } catch {
+    copies = {};
+  }
+  const before = JSON.stringify(copies);
   const wanted = new Set(shared);
   for (const entry of readdirSync(dir)) {
+    if (wanted.has(entry)) continue;
     const target = join(dir, entry);
-    if (wanted.has(entry) || !lstatSync(target).isSymbolicLink()) continue;
-    // Drop links to host items no longer shared; leave anything Claude wrote.
-    if (isWithin(readlinkSync(target), hostClaudeDir)) unlinkSync(target);
+    const stat = lstatSync(target);
+    if (stat.isSymbolicLink()) {
+      // Drop links to host items no longer shared; leave anything Claude wrote.
+      if (isWithin(readlinkSync(target), hostClaudeDir)) unlinkSync(target);
+    } else if (copies[entry] !== undefined) {
+      // A copy of an item no longer shared goes, unless it was edited here: then it is yours.
+      if (stat.isFile() && sha256(readFileSync(target)) === copies[entry]) unlinkSync(target);
+      delete copies[entry];
+    }
   }
   for (const item of shared) {
     const source = join(hostClaudeDir, item);
     const target = join(dir, item);
-    if (!existsSync(source)) continue;
-    let stat: ReturnType<typeof lstatSync> | null = null;
+    let sourceIsDir: boolean;
     try {
-      stat = lstatSync(target);
+      sourceIsDir = statSync(source).isDirectory();
     } catch {
-      stat = null;
+      // Missing on the host: a copy already here stays, so a file being replaced costs nothing.
+      if (copies[item] !== undefined) console.warn(`[paseo-sbx] ${source} is missing: ${target} keeps the last copy`);
+      continue;
     }
-    if (stat === null) {
-      symlinkSync(source, target);
-    } else if (stat.isSymbolicLink()) {
-      if (readlinkSync(target) !== source) {
-        unlinkSync(target);
+    const stat = lstatOrNull(target);
+    if (sourceIsDir) {
+      if (stat === null) {
         symlinkSync(source, target);
+      } else if (stat.isSymbolicLink()) {
+        if (readlinkSync(target) !== source) {
+          unlinkSync(target);
+          symlinkSync(source, target);
+        }
+      } else {
+        console.warn(`[paseo-sbx] ${target} is a local copy and hides the shared ${source}`);
       }
-    } else {
+      continue;
+    }
+    if (stat !== null && stat.isSymbolicLink() && !isWithin(readlinkSync(target), hostClaudeDir)) {
+      console.warn(`[paseo-sbx] ${target} is a link of yours and hides the shared ${source}`);
+      continue;
+    }
+    if (stat !== null && !stat.isSymbolicLink() && copies[item] === undefined) {
       console.warn(`[paseo-sbx] ${target} is a local copy and hides the shared ${source}`);
+      continue;
+    }
+    const data = readFileSync(source);
+    const hash = sha256(data);
+    if (stat !== null && !stat.isSymbolicLink()) {
+      const current = sha256(readFileSync(target));
+      if (current === hash) {
+        copies[item] = hash;
+        continue;
+      }
+      if (current !== copies[item]) console.warn(`[paseo-sbx] ${target} was edited in the sandbox: replaced by ${source}`);
+    }
+    // A link from before copies existed is replaced like a stale copy.
+    writeAtomic(target, data, 0o444);
+    copies[item] = hash;
+  }
+  if (JSON.stringify(copies) !== before) writeAtomic(recordPath, `${JSON.stringify(copies, null, 2)}\n`, 0o600);
+}
+
+/**
+ * Mounts sandboxes created before shared files were copied still carry: each shared file and the
+ * file a link of yours points it at. Nothing reads them any more, so they need no recreation.
+ */
+export function retiredClaudeFileMounts(hostClaudeDir: string, shared: readonly string[]): Set<string> {
+  const retired = new Set<string>();
+  for (const item of new Set([...LEGACY_CLAUDE_SHARED, ...shared])) {
+    const path = join(hostClaudeDir, item);
+    if (isDirectory(path)) continue;
+    retired.add(path);
+    try {
+      retired.add(realpathSync(path));
+    } catch {
+      // gone from the host
     }
   }
+  return retired;
 }
 
 /** Claude Code's transcript dir name for a project path (same encoding as Paseo's lookup). */
@@ -234,11 +351,12 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   }
   const commonDir = await gitCommonDir(input.cwd);
   if (commonDir && !isWithin(commonDir, directory)) requested.push({ path: commonDir, readOnly: false, source: "git" });
-  // Each shared Claude item on its own, never the whole config dir with its credentials. The links
-  // in the sandbox's config dir point at these paths; a linked item also needs its target.
+  // Each shared Claude folder on its own, never the whole config dir with its credentials. The
+  // links in the sandbox's config dir point at these paths; a linked folder also needs its
+  // target. Shared files are copied into the config dir instead (prepareClaudeConfigDir).
   for (const item of settings.claudeShared) {
     const shared = join(paths.hostClaudeDir, item);
-    if (!existsSync(shared)) continue;
+    if (!isDirectory(shared)) continue;
     requested.push({ path: shared, readOnly: true, source: "claude" });
     const target = realpathSync(shared);
     if (target !== shared) requested.push({ path: target, readOnly: true, source: "claude" });
@@ -270,7 +388,8 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   // git cannot reach from the host: keep them at the host's.
   const agent = AGENTS[input.agent ?? "claude"];
   const secrets = secretsFor(input.secrets ?? [], identity.name);
-  if (agent.id === "claude" && secrets.includes(agent.secretService) && !hasOwnClaudeLogin(env, paths)) {
+  const settingsShared = settings.claudeShared.includes("settings.json");
+  if (agent.id === "claude" && secrets.includes(agent.secretService) && claudeLogin(env, paths, settingsShared).source === null) {
     // The sbx proxy swaps this marker for the stored secret.
     forwarded.ANTHROPIC_API_KEY = "proxy-managed";
   }
@@ -313,6 +432,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     mcpServers: mcpAutoLoad(settings, repoKey),
     env: forwarded,
     claudeConfigDir,
+    hostClaudeSettings: join(paths.hostClaudeDir, "settings.json"),
   };
   return { spec, mounts: sourced, gsdPath, missingEnv, rejectedEnv };
 }

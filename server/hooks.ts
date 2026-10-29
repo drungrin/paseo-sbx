@@ -10,6 +10,7 @@ import type { PluginPaths } from "./paths";
 import { ensureProvider } from "./provider";
 import { storedSecrets } from "./sbx";
 import { buildSpec, copyHostTranscripts } from "./spec-builder";
+import { rememberWorkspaceSandbox } from "./workspaces";
 
 export interface ServerDeps {
   paths: PluginPaths;
@@ -53,6 +54,7 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
       secrets,
     });
     if (!binding) {
+      rememberWorkspaceSandbox(deps.paths, request.workspaceId, spec);
       writeBinding(deps.paths, request.agentId, {
         key: spec.key,
         name: spec.name,

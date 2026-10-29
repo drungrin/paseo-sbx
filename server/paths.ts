@@ -6,10 +6,13 @@ import {
   FORWARDER_SOURCE,
   GUEST_AGENT_SOURCE,
   HOME_MOUNTS_SOURCE,
+  SEED_SETTINGS_SOURCE,
+  SHELL_RC_SOURCE,
   SUPERVISOR_SOURCE,
   WAIT_PORTS_SOURCE,
   WRAPPER_SOURCE,
   launcherSource,
+  shellLauncherSource,
 } from "./wrapper-source";
 
 export interface PluginPaths {
@@ -23,6 +26,8 @@ export interface PluginPaths {
   binDir: string;
   /** Provider command of Claude: a shell launcher that runs the wrapper with the daemon's node. */
   launcher: string;
+  /** Command of the Sandbox terminal profile: a shell in the workspace's sandbox. */
+  shellLauncher: string;
   wrapper: string;
   /** Agents' shared homes (`homes/<agent>`), mounted in every sandbox and catalog. */
   homesDir: string;
@@ -31,6 +36,8 @@ export interface PluginPaths {
   /** Per-agent sandbox bindings, so resume and history keep the sandbox they started in. */
   bindingsDir: string;
   claudeConfigs: string;
+  /** The last spec built for each workspace, without its variables, for the Sandbox terminal. */
+  workspacesDir: string;
   defaultEnvFile: string;
   hostClaudeDir: string;
 }
@@ -46,11 +53,13 @@ export function pluginPaths(env: NodeJS.ProcessEnv = process.env, home = homedir
     runDir: join(root, "run"),
     binDir,
     launcher: launcherPath(binDir, "claude"),
+    shellLauncher: join(binDir, "paseo-sbx-shell"),
     wrapper: join(binDir, "paseo-sbx-claude.cjs"),
     homesDir: join(root, "homes"),
     catalogDir: join(root, "catalog"),
     bindingsDir: join(root, "agents"),
     claudeConfigs: join(root, "claude"),
+    workspacesDir: join(root, "workspaces"),
     defaultEnvFile: join(env.XDG_CONFIG_HOME || join(home, ".config"), "paseo-sbx", "env"),
     hostClaudeDir: env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
   };
@@ -73,12 +82,15 @@ function binFiles(paths: PluginPaths) {
       source: launcherSource(process.execPath, paths.wrapper, agent),
       mode: 0o755,
     })),
+    { name: "paseo-sbx-shell", source: shellLauncherSource(process.execPath, paths.wrapper), mode: 0o755 },
     { name: "paseo-sbx-claude.cjs", source: WRAPPER_SOURCE, mode: 0o644 },
     { name: "loopback-forward.py", source: FORWARDER_SOURCE, mode: 0o644 },
     { name: "wait-ports.py", source: WAIT_PORTS_SOURCE, mode: 0o644 },
     { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
     { name: "guest-agent.py", source: GUEST_AGENT_SOURCE, mode: 0o644 },
     { name: "home-mounts.sh", source: HOME_MOUNTS_SOURCE, mode: 0o644 },
+    { name: "seed-claude-settings.py", source: SEED_SETTINGS_SOURCE, mode: 0o644 },
+    { name: "paseo-sbx-shellrc", source: SHELL_RC_SOURCE, mode: 0o644 },
   ];
 }
 

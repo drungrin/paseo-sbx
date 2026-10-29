@@ -118,7 +118,7 @@ export function McpServersTab({
       {...header}
       notes={[
         "sbx keeps each server's sign-in or API key on this host and adds it to the gateway's requests: agents use the tools without ever holding a token.",
-        "On for all sandboxes loads a server into every sandbox, now and as new ones are created. A workspace's Sandbox panel turns servers on or off for its repository.",
+        "On for all sandboxes loads a server into every sandbox, now and as new ones are created. A workspace's Sandbox dashboard turns servers on or off for its repository.",
         "Turning a server off unloads it at once from running sandboxes, and from stopped ones when they next start.",
         "Agents can load any server registered here themselves, with the gateway's mcp-find and mcp-add tools.",
         "Only remote servers: a local one would run on this host, outside every sandbox.",
@@ -540,7 +540,7 @@ function AddServer({
       <SwitchRow
         theme={theme}
         label="On for all sandboxes"
-        hint="Loads it into every sandbox, now and into new ones. Off, each repository turns it on in its Sandbox panel."
+        hint="Loads it into every sandbox, now and into new ones. Off, each repository turns it on in its Sandbox dashboard."
         value={everywhere}
         onValueChange={setEverywhere}
       />

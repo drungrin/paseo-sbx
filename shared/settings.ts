@@ -5,15 +5,15 @@ import { AGENT_IDS } from "./agents";
 export const ISOLATION_MODES = ["workspace", "directory"] as const;
 export type IsolationMode = (typeof ISOLATION_MODES)[number];
 
-/** Items of the host's Claude config dir exposed read-only inside every sandbox config dir. */
-export const DEFAULT_CLAUDE_SHARED = [
-  "settings.json",
-  "CLAUDE.md",
-  "skills",
-  "agents",
-  "commands",
-  "rules",
-];
+/**
+ * Items of the host's Claude config dir each sandbox gets: folders linked read-only, files copied
+ * at every session. `settings.json` is not one of them: each sandbox keeps its own, started from
+ * sbx's kit, and gets only the `env` of yours (your login) at every session.
+ */
+export const DEFAULT_CLAUDE_SHARED = ["CLAUDE.md", "skills", "agents", "commands", "rules"];
+
+/** The default before version 3, which shared `settings.json` too. */
+export const LEGACY_CLAUDE_SHARED = ["settings.json", ...DEFAULT_CLAUDE_SHARED];
 
 /** Per-repository settings, keyed by `repoKey()`: every worktree of a repo shares them. */
 const repoConfigSchema = z.object({
@@ -102,7 +102,7 @@ export const sandboxSettingsSchema = z.object({
 });
 export type SandboxSettings = z.infer<typeof sandboxSettingsSchema>;
 
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 
 /** Shared by both runtimes. The server registers it with its migration (`server/settings-migration.ts`). */
 export const sandboxSettings = defineSettings({

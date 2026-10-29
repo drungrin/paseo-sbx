@@ -223,7 +223,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           <SettingsInput label="Minimum memory (GiB)" initialValue={draft.memoryFloorGiB} onChangeText={update("memoryFloorGiB")} />
           <SettingsInput
             label="CPUs (0 = all)"
-            hint="A repository can pick its own in its Sandbox panel."
+            hint="A repository can pick its own in its Sandbox dashboard."
             initialValue={draft.cpus}
             onChangeText={update("cpus")}
           />
@@ -257,7 +257,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
         <SettingsCard>
           <SettingsSelect
             label="Default template"
-            hint="New sandboxes start from it unless their repository picks another in its Sandbox panel, under Template."
+            hint="New sandboxes start from it unless their repository picks another in its Sandbox dashboard, under Template."
             value={draft.template}
             options={templateOptions}
             onValueChange={update("template")}
@@ -277,7 +277,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
           />
           <SettingsInput
             label="Shared Claude config items"
-            hint="Linked read-only from your Claude config dir into each sandbox's own config dir."
+            hint="From your Claude config dir into each sandbox's own: folders linked read-only, files copied at every session. Each sandbox keeps its own settings.json; your login reaches it from the env of yours."
             initialValue={draft.claudeShared}
             onChangeText={update("claudeShared")}
           />

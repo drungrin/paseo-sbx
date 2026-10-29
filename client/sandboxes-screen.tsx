@@ -256,7 +256,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
               description="Saved VM filesystems new sandboxes start from."
               {...header}
               notes={[
-                "Prepare a template from a workspace's Sandbox panel: it opens a shell in a clean sandbox, then saves it.",
+                "Prepare a template from a workspace's Sandbox dashboard: it opens a shell in a clean sandbox, then saves it.",
                 "Remove appears on templates nothing uses. One the default or a repository picks needs another picked first; one a sandbox was created from needs that sandbox recreated or removed.",
               ]}
             >
@@ -350,7 +350,7 @@ function screenNeeds(
     needs.push({
       tone: "warning",
       title: `${plural(legacy, "setting")} from an older version to reassign`,
-      detail: "Set them again in the repository's Sandbox panel, then remove them below.",
+      detail: "Set them again in the repository's Sandbox dashboard, then remove them below.",
     });
   }
   return needs;
@@ -706,21 +706,42 @@ function SandboxRow({
 function loginView(agent: AgentStatus, stateHome: string): { tone: Tone; label: string; detail: string; command: string | null } {
   // Codex signs in with a ChatGPT account through sbx's OAuth flow.
   const command = `XDG_STATE_HOME=${stateHome} sbx secret set ${agent.login.service}${agent.id === "codex" ? " --oauth" : ""}`;
-  // Claude gets the secret's marker at every session; other agents take it from their kit at Update.
+  // Claude gets its own login, else the secret's marker, at every session; other agents take the
+  // secret from their kit at Update.
   if (agent.id === "claude") {
-    return agent.login.stored
-      ? {
-          tone: "success",
-          label: "Signed in",
-          detail: "Through your Claude settings when they have a login, else the sbx anthropic secret.",
-          command: null,
-        }
-      : {
-          tone: "neutral",
-          label: "Claude settings",
-          detail: "Signs in through your Claude settings. Without a login there, store the sbx anthropic secret:",
-          command,
-        };
+    const own = agent.login.own;
+    if (own?.source === "settings" || own?.source === "environment") {
+      const names = own.names.length > 0 ? own.names.join(", ") : "an apiKeyHelper";
+      return {
+        tone: "success",
+        label: own.source === "settings" ? "Claude settings" : "Environment",
+        detail:
+          own.source === "settings"
+            ? `Each session gets ${names} from the env of your Claude settings.`
+            : `Each session gets ${names} from the daemon's environment.`,
+        command: null,
+      };
+    }
+    if (own?.source === "unreadable") {
+      return {
+        tone: "warning",
+        label: "Unreadable settings",
+        detail:
+          "Your Claude settings could not be read, so sessions get no login from them. Fix the file, or store the sbx anthropic secret:",
+        command,
+      };
+    }
+    if (agent.login.stored) {
+      return { tone: "success", label: "Signed in", detail: "Through the sbx anthropic secret.", command: null };
+    }
+    return {
+      tone: "warning",
+      label: "No login",
+      detail: own?.helper
+        ? "Your Claude settings sign in with an apiKeyHelper, which sandboxes cannot run. Store the sbx anthropic secret:"
+        : "Add a key or a gateway to the env of your Claude settings, or store the sbx anthropic secret:",
+      command,
+    };
   }
   return agent.login.stored
     ? { tone: "success", label: "Signed in", detail: `Through the sbx ${agent.login.service} secret.`, command: null }
@@ -883,7 +904,11 @@ function TemplateList({
   if (!loaded) return <Text style={text(theme, 13, "400", true)}>Listing templates…</Text>;
   if (templates.length === 0)
     return (
-      <Empty theme={theme} title="No templates yet" detail="Prepare one from a workspace's Sandbox panel, in its Template tab." />
+      <Empty
+        theme={theme}
+        title="No templates yet"
+        detail="Prepare one from a workspace's Sandbox dashboard, in its Template tab."
+      />
     );
   const total = templates.reduce((sum, template) => sum + (template.sizeBytes ?? 0), 0);
   return (
@@ -969,8 +994,8 @@ function LegacyOverrides({ theme }: { theme: Theme }) {
   return (
     <Section theme={theme} tone="warning" overline="From an older plugin version" title="Settings to reassign" gap={6}>
       <Note theme={theme}>
-        Per-sandbox settings that could not move to a single repository. Set them again in the repository's Sandbox panel, then
-        remove them here.
+        Per-sandbox settings that could not move to a single repository. Set them again in the repository's Sandbox dashboard,
+        then remove them here.
       </Note>
       <View role="list">
         {entries.map(([key, override], index) => (

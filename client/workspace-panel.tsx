@@ -1,8 +1,6 @@
-import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { useMutation } from "@tanstack/react-query";
+import { useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
-import { shellCommandRpc, shellResultSchema } from "../shared/rpc";
 import { agentState, agentTone, errorMessage, formatMiB, operationLabel, plural, sandboxStatus, shortRef } from "./format";
 import { DownloadConsentPrompt, useDownloadConsent } from "./consent";
 import { Column, Columns, Empty, Frame, Needs, StatusChip, Tabbed, type Tab } from "./frame";
@@ -30,16 +28,7 @@ import { panelBadges, panelNeeds, type PanelTab, type PanelTabProps } from "./pa
 import { MountsTab, ResourcesTab, VariablesTab } from "./panel-config";
 import { ServicesTab } from "./panel-services";
 import { TemplateTab } from "./panel-template";
-import {
-  useArchiveAgent,
-  useAwaitOperation,
-  useInvalidateAll,
-  useOpenTerminal,
-  useSandboxAction,
-  useSandboxDescription,
-  useStatus,
-  type Description,
-} from "./queries";
+import { useArchiveAgent, useSandboxAction, useSandboxDescription, useStatus, type Description } from "./queries";
 
 const TAB_LABELS: Record<PanelTab, string> = {
   overview: "Overview",
@@ -240,15 +229,6 @@ function HeroFigure({
 function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
   const status = useStatus();
   const action = useSandboxAction();
-  const invalidate = useInvalidateAll();
-  const openTerminal = useOpenTerminal(workspaceId);
-  const getShell = useRpc(shellCommandRpc);
-  const awaitOperation = useAwaitOperation();
-  const openShell = useMutation({
-    mutationFn: async () =>
-      openTerminal(shellResultSchema.parse(await awaitOperation(await getShell({ workspaceId, directory })))),
-    onSettled: invalidate,
-  });
   const consent = useDownloadConsent();
   const accent = toneColor(theme, "accent");
   const created = data.status !== null;
@@ -259,7 +239,7 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
   const working = data.agents.filter((agent) => agent.activeTurn).length;
   const memoryShare = data.rssMiB === null ? null : Math.round((100 * data.rssMiB) / data.memoryMiB);
   const running = data.operations.find((operation) => operation.status === "running");
-  const busy = openShell.isPending || action.isPending;
+  const busy = action.isPending;
   return (
     <View
       style={{
@@ -373,40 +353,34 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
           }
         />
       </View>
-      <Actions>
-        <Button
-          theme={theme}
-          kind="primary"
-          label={created ? "Open shell" : "Create and open shell"}
-          busy={openShell.isPending}
-          disabled={busy}
-          onPress={() => consent.request(() => openShell.mutate(), !created && fromImage)}
-        />
-        {created ? (
-          <>
-            <Button
-              theme={theme}
-              label="Stop"
-              disabled={busy || data.status !== "running"}
-              onPress={() => action.mutate({ name: data.name, action: "stop" })}
-            />
-            <ConfirmButton
-              theme={theme}
-              label="Recreate"
-              confirmLabel="Confirm recreate"
-              disabled={busy || data.recreateBlockers.length > 0}
-              onConfirm={() => consent.request(() => action.mutate({ name: data.name, action: "recreate" }), fromImage)}
-            />
-            <ConfirmButton
-              theme={theme}
-              label="Remove"
-              confirmLabel="Confirm remove"
-              disabled={busy}
-              onConfirm={() => action.mutate({ name: data.name, action: "remove" })}
-            />
-          </>
-        ) : null}
-      </Actions>
+      {created ? (
+        <Actions>
+          <Button
+            theme={theme}
+            label="Stop"
+            disabled={busy || data.status !== "running"}
+            onPress={() => action.mutate({ name: data.name, action: "stop" })}
+          />
+          <ConfirmButton
+            theme={theme}
+            label="Recreate"
+            confirmLabel="Confirm recreate"
+            disabled={busy || data.recreateBlockers.length > 0}
+            onConfirm={() => consent.request(() => action.mutate({ name: data.name, action: "recreate" }), fromImage)}
+          />
+          <ConfirmButton
+            theme={theme}
+            label="Remove"
+            confirmLabel="Confirm remove"
+            disabled={busy}
+            onConfirm={() => action.mutate({ name: data.name, action: "remove" })}
+          />
+        </Actions>
+      ) : (
+        <Note theme={theme}>
+          Created when a sandboxed agent starts here, or when you open a Sandbox terminal from the + menu.
+        </Note>
+      )}
       <DownloadConsentPrompt consent={consent} theme={theme} />
       {running ? (
         <View accessibilityLiveRegion="polite" style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
@@ -419,11 +393,6 @@ function Hero({ data, theme, compact, workspaceId, directory }: PanelTabProps) {
       ) : null}
       {action.data?.graceful === false ? (
         <Note theme={theme}>Stopped without shutting its Docker down first: databases recover on the next start.</Note>
-      ) : null}
-      {openShell.error ? (
-        <Note theme={theme} tone="danger">
-          {errorMessage(openShell.error)}
-        </Note>
       ) : null}
       {action.error ? (
         <Note theme={theme} tone="danger">

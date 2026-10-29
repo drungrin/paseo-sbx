@@ -45,7 +45,23 @@ const agentStatusSchema = z.object({
     createdAt: z.string().nullable(),
   }),
   /** The sbx service secret it signs in with, and whether one applies. */
-  login: z.object({ service: z.string(), stored: z.boolean() }),
+  login: z.object({
+    service: z.string(),
+    stored: z.boolean(),
+    /**
+     * Claude only: the login sessions get on their own, which wins over the secret. From your
+     * Claude settings' env or the daemon's environment (variable names only); `helper` when your
+     * settings sign in with an apiKeyHelper. Null for other agents.
+     */
+    own: z
+      .object({
+        source: z.enum(["settings", "environment", "unreadable"]).nullable(),
+        names: z.array(z.string()),
+        helper: z.boolean(),
+      })
+      .nullable()
+      .default(null),
+  }),
   /** How to add the CLI to a template. */
   install: z.string(),
 });
@@ -257,11 +273,14 @@ export const memoryRpc = defineRpc({
 /** `name` is the sandbox; `title` names the terminal tab. */
 const shellSchema = z.object({ name: z.string(), title: z.string(), command: z.string(), args: z.array(z.string()) });
 
-/** Result: the shell (`{ name, command, args }`). */
-export const shellCommandRpc = defineRpc({
-  name: "sandbox.shell",
+/**
+ * The Sandbox terminal of a workspace: records the workspace's sandbox for the terminal's
+ * launcher, which creates it when missing, and returns the command to open.
+ */
+export const sandboxTerminalRpc = defineRpc({
+  name: "sandbox.terminal",
   input: workspaceTargetSchema,
-  output: operationSchema,
+  output: shellSchema,
 });
 
 const templateSchema = z.object({

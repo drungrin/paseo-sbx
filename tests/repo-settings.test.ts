@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sandboxSettingsSchema } from "../shared/settings";
+import { DEFAULT_CLAUDE_SHARED, sandboxSettingsSchema } from "../shared/settings";
 import { pluginPaths } from "../server/paths";
 import { repoIdentity } from "../server/repo";
 import { migrateSettings } from "../server/settings-migration";
@@ -120,6 +120,22 @@ describe("settings migration", () => {
     );
     expect(migrated.legacyOverrides["workspace:wks_1"].reason).toBe("workspace");
     expect(migrated.legacyOverrides[`directory:${main}`].reason).toBe("conflict");
+  });
+
+  it("stops sharing settings.json from a list at the old default, and keeps a list you changed", async () => {
+    const legacy = ["settings.json", "CLAUDE.md", "skills", "agents", "commands", "rules"];
+    const atDefault = sandboxSettingsSchema.parse(await migrateSettings({ claudeShared: [...legacy].reverse() }, 2));
+    expect(atDefault.claudeShared).toEqual(DEFAULT_CLAUDE_SHARED);
+    expect(atDefault.claudeShared).not.toContain("settings.json");
+    const custom = ["settings.json", "CLAUDE.md", "keybindings.json"];
+    expect(sandboxSettingsSchema.parse(await migrateSettings({ claudeShared: custom }, 2)).claudeShared).toEqual(custom);
+    expect(sandboxSettingsSchema.parse(await migrateSettings({ claudeShared: [] }, 2)).claudeShared).toEqual([]);
+    // Never saved: the new default.
+    expect(sandboxSettingsSchema.parse(await migrateSettings({}, 2)).claudeShared).toEqual(DEFAULT_CLAUDE_SHARED);
+    // Version 1 goes through both steps.
+    const fromV1 = sandboxSettingsSchema.parse(await migrateSettings({ ...v1Globals, claudeShared: legacy, overrides: {} }, 1));
+    expect(fromV1.claudeShared).toEqual(DEFAULT_CLAUDE_SHARED);
+    expect(fromV1.repos).toEqual({});
   });
 });
 

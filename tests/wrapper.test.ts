@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
-import { SUPERVISOR_SOURCE, WRAPPER_SOURCE, launcherSource } from "../server/wrapper-source";
+import {
+  SEED_SETTINGS_SOURCE,
+  SHELL_RC_SOURCE,
+  SUPERVISOR_SOURCE,
+  WRAPPER_SOURCE,
+  launcherSource,
+} from "../server/wrapper-source";
 import { processStart } from "../server/state";
 import { FAKE_SBX } from "./fake-sbx";
 
@@ -495,6 +501,69 @@ describe("wrapper hardening", () => {
     expect(exec?.envNames).not.toContain("SPECIAL");
   });
 
+  it("gives Claude sessions the env of your Claude settings, under the forwarded variables", () => {
+    const hostSettings = join(root, "host-claude-settings.json");
+    writeFileSync(
+      hostSettings,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://gateway.test:1", LICENSE_KEY: "from-settings", HOME: "/x" } }),
+    );
+    const sandbox = spec({ env: { LICENSE_KEY: "from-file" }, hostClaudeSettings: hostSettings });
+    const result = run([], { env: { [SPEC_ENV]: JSON.stringify(sandbox) }, input: "{}\n" });
+    expect(result.status).toBe(0);
+    const guest = JSON.parse(result.stdout);
+    expect(guest.env.ANTHROPIC_BASE_URL).toBe("http://gateway.test:1");
+    expect(guest.env.LICENSE_KEY).toBe("from-file");
+    expect(guest.env.HOME).not.toBe("/x");
+    const exec = result.calls.find((call) => call.args[0] === "exec" && call.args[1] === "-i");
+    expect(exec?.args.join(" ")).not.toContain("gateway.test");
+
+    const codex = spec({ agent: "codex", binary: "claude", env: {}, hostClaudeSettings: hostSettings });
+    const other = run([], { env: { [SPEC_ENV]: JSON.stringify(codex) }, input: "{}\n" });
+    expect(other.status).toBe(0);
+    expect(JSON.parse(other.stdout).env.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it("starts the sandbox's own Claude settings from the kit's, once, without its apiKeyHelper", () => {
+    const home = join(root, "guest-home");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(
+      join(home, ".claude", "settings.json"),
+      JSON.stringify({ apiKeyHelper: "echo proxy-managed", permissions: { defaultMode: "bypassPermissions" } }),
+    );
+    const config = join(root, "config");
+    mkdirSync(config, { recursive: true });
+    const script = join(root, "seed.py");
+    writeFileSync(script, SEED_SETTINGS_SOURCE);
+    const seed = () => execFileSync("python3", [script, config], { env: { HOME: home, PATH: process.env.PATH } });
+    seed();
+    expect(JSON.parse(readFileSync(join(config, "settings.json"), "utf8"))).toEqual({
+      permissions: { defaultMode: "bypassPermissions" },
+    });
+    writeFileSync(join(config, "settings.json"), '{"enabledPlugins":{"x@y":true}}');
+    seed();
+    expect(readFileSync(join(config, "settings.json"), "utf8")).toBe('{"enabledPlugins":{"x@y":true}}');
+  });
+
+  it("gives claude started in the Sandbox terminal sbx's MCP gateway, except for its subcommands", () => {
+    const bin = join(root, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "claude"), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
+    const rc = join(root, "shellrc");
+    writeFileSync(rc, SHELL_RC_SOURCE);
+    const call = (args: string) =>
+      execFileSync("bash", ["--norc", "--noprofile", "-c", `eval "$(sed -n '/^claude()/,/^}/p' ${rc})"; claude ${args}`], {
+        env: { PATH: `${bin}:${process.env.PATH}`, MCP_GATEWAY_URL: "http://gw.test/mcp", MCP_SENTINEL_TOKEN_NAME: "tok" },
+        encoding: "utf8",
+      });
+    const session = call("-p hi").split("|");
+    expect(session[0]).toBe("--mcp-config");
+    expect(JSON.parse(session[1])).toEqual({
+      mcpServers: { "mcp-gateway": { type: "http", url: "http://gw.test/mcp", headers: { Authorization: "Bearer tok" } } },
+    });
+    expect(session.slice(2, 4)).toEqual(["-p", "hi"]);
+    expect(call("mcp list")).toBe("mcp|list|");
+  });
+
   it("removes env files left by sessions that died", () => {
     const sandbox = spec();
     const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
@@ -918,5 +987,37 @@ describe("MCP servers", () => {
     });
     const codexRun = run(["app-server"], { env: { [SPEC_ENV]: JSON.stringify(codex), FAKE_SBX_GATEWAY_URL: GATEWAY_URL }, input: "{}\n" });
     expect(JSON.parse(codexRun.stdout).args).toEqual(["app-server"]);
+  });
+});
+
+describe("Sandbox terminal", () => {
+  const TITLE = "\x1b]0;Sandbox\x07";
+
+  it("asks for the dashboard when the workspace's sandbox is not recorded yet", () => {
+    const result = run(["--paseo-sbx-shell"], { env: { PASEO_WORKSPACE_ID: "wks_unknown" } });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe(TITLE);
+    expect(result.stderr).toContain("open its Sandbox dashboard once");
+    expect(result.calls).toEqual([]);
+  });
+
+  it("creates the recorded sandbox and opens a shell in the workspace with the sessions' Claude config and login", () => {
+    const hostSettings = join(root, "host-claude-settings.json");
+    writeFileSync(hostSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://gateway.test:1" }, model: "x" }));
+    const sandbox = spec({ env: {}, mcpServers: [], hostClaudeSettings: hostSettings });
+    mkdirSync(join(root, "state", "workspaces"), { recursive: true });
+    writeFileSync(join(root, "state", "workspaces", "wks_1.json"), JSON.stringify(sandbox));
+    const input = 'echo "in the guest: $PWD"; echo "config: $CLAUDE_CONFIG_DIR"; echo "codex: $CODEX_HOME"; echo "base: $ANTHROPIC_BASE_URL"\n';
+    const result = run(["--paseo-sbx-shell"], { env: { PASEO_WORKSPACE_ID: "wks_1" }, input });
+    expect(result.status).toBe(0);
+    expect(result.stdout.startsWith(TITLE)).toBe(true);
+    expect(result.stdout).toContain(`in the guest: ${workspace}`);
+    expect(result.stdout).toContain(`config: ${sandbox.claudeConfigDir}`);
+    expect(result.stdout).toContain(`codex: ${join(sandbox.homesDir, "codex")}`);
+    expect(result.stdout).toContain("base: http://gateway.test:1");
+    expect(result.calls.map((call) => call.args[0])).toContain("create");
+    const shell = result.calls.at(-1)?.args ?? [];
+    expect(shell.slice(0, 5)).toEqual(["exec", "-it", "-w", workspace, "--env-file"]);
+    expect(shell.slice(6)).toEqual([sandbox.name, "bash", "--rcfile", join(sandbox.binDir, "paseo-sbx-shellrc"), "-i"]);
   });
 });

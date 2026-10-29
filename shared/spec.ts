@@ -57,6 +57,11 @@ export interface SandboxSpec {
   mcpServers?: string[];
   env: Record<string, string>;
   claudeConfigDir: string;
+  /**
+   * Your Claude settings on the host. Sessions get its `env` (your login) through their private
+   * env file, read at every launch; the file itself stays out of the sandbox. Absent from older plugins.
+   */
+  hostClaudeSettings?: string;
 }
 
 export interface HomeMount {

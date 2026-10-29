@@ -19,8 +19,8 @@ import {
   removeMcpServerRpc,
   removeTemplateRpc,
   sandboxActionRpc,
+  sandboxTerminalRpc,
   saveTemplateRpc,
-  shellCommandRpc,
   startMcpSignInRpc,
   statusRpc,
   unpublishPortRpc,
@@ -40,9 +40,19 @@ import { getOperation, operationsFor, runOperation } from "./operations";
 import { actualPublications, internalPorts, publishPort, readListeners, unpublishPort } from "./ports";
 import { recreateBlockers, recreateSandbox } from "./recreate";
 import { repoDisplayName, repoIdentity } from "./repo";
-import { listSandboxes, prepareSandbox, removeSandbox, sbxHealth, shellCommand, stopSandbox } from "./sbx";
-import { buildSpec, envFilePath, forwardedEnvNames, readEnvFile, templateFor } from "./spec-builder";
+import { listSandboxes, removeSandbox, sbxHealth, shellCommand, stopSandbox } from "./sbx";
+import {
+  buildSpec,
+  claudeLogin,
+  envFilePath,
+  forwardedEnvNames,
+  readEnvFile,
+  retiredClaudeFileMounts,
+  templateFor,
+} from "./spec-builder";
 import { readSandboxState, type SandboxState } from "./state";
+import { ensureTerminalProfile } from "./terminal-profile";
+import { rememberWorkspaceSandbox } from "./workspaces";
 import {
   ensureTemplatePrep,
   findTemplate,
@@ -87,11 +97,17 @@ function templateStatus(
   return { configured, sandbox, status: configuredId === state.templateImageId ? ("match" as const) : ("diverged" as const) };
 }
 
+/** The terminal menu entry is a convenience: failing to add it never fails the request. */
+function warnTerminalProfile(error: unknown): void {
+  console.warn(`[paseo-sbx] could not add the Sandbox terminal profile: ${error instanceof Error ? error.message : String(error)}`);
+}
+
 export function registerHandlers(server: PluginServerContext, deps: ServerDeps): void {
   const { paths } = deps;
 
   server.handle(statusRpc, async (_input, { paseo }) => {
     const settings = await deps.readSettings();
+    await ensureTerminalProfile(paseo, paths).catch(warnTerminalProfile);
     await disableUnusedProviders(paseo, settings);
     const sbx = await sbxHealth(paths);
     const agents = await Promise.all(
@@ -109,7 +125,10 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
             cliVersion: catalog.record?.cliVersion ?? null,
             createdAt: catalog.record?.createdAt ?? null,
           },
-          login: catalog.login,
+          login: {
+            ...catalog.login,
+            own: id === "claude" ? claudeLogin(process.env, paths, settings.claudeShared.includes("settings.json")) : null,
+          },
           install: AGENTS[id].install,
         };
       }),
@@ -142,6 +161,8 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const settings = await deps.readSettings();
     const built = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
     const { spec } = built;
+    rememberWorkspaceSandbox(paths, workspaceId, spec);
+    await ensureTerminalProfile(paseo, paths).catch(warnTerminalProfile);
     const [sandboxes, templates, repo] = await Promise.all([
       listSandboxes(paths),
       listTemplates(paths),
@@ -151,6 +172,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const sandbox = sandboxes.find((entry) => entry.name === spec.name);
     const state = readSandboxState(paths, spec.name);
     const created = sandbox && state?.mounts ? new Set(state.mounts) : null;
+    const retired = retiredClaudeFileMounts(paths.hostClaudeDir, settings.claudeShared);
     return {
       key: spec.key,
       name: spec.name,
@@ -171,7 +193,9 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
         exists: existsSync(mount.path),
         applied: created ? created.has(formatMount(mount)) : null,
       })),
-      removedMounts: created ? [...created].filter((entry) => !spec.mounts.includes(entry)) : [],
+      removedMounts: created
+        ? [...created].filter((entry) => !spec.mounts.includes(entry) && !retired.has(entry.replace(/:ro$/, "")))
+        : [],
       gsdPath: built.gsdPath && {
         enabled: built.gsdPath.enabled,
         members: built.gsdPath.members.map((member) => ({ ...member, available: existsSync(member.path) })),
@@ -274,14 +298,14 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     };
   });
 
-  // Creates the sandbox when needed so a terminal can enter it before any agent ran there.
-  server.handle(shellCommandRpc, async ({ workspaceId, directory }) => {
+  // The launcher creates the sandbox when needed, so a terminal can enter it before any agent ran there.
+  server.handle(sandboxTerminalRpc, async ({ workspaceId, directory }, { paseo }) => {
     const settings = await deps.readSettings();
+    // Prepared like a session's: the shared files are copied fresh before the shell opens.
     const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths });
-    return runOperation("prepare", spec.name, async () => {
-      await prepareSandbox(paths, spec);
-      return { name: spec.name, ...shellCommand(paths, spec.name, { title: "Sandbox", homeMounts: spec.homeMounts }) };
-    });
+    rememberWorkspaceSandbox(paths, workspaceId, spec);
+    await ensureTerminalProfile(paseo, paths).catch(warnTerminalProfile);
+    return { name: spec.name, title: "Sandbox", command: paths.shellLauncher, args: [] };
   });
 
   server.handle(listTemplatesRpc, async () => {

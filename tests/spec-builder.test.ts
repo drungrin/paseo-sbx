@@ -1,11 +1,29 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sandboxSettingsSchema } from "../shared/settings";
+import { DEFAULT_CLAUDE_SHARED, sandboxSettingsSchema } from "../shared/settings";
 import { pluginPaths } from "../server/paths";
-import { buildSpec, claudeProjectDirName, copyHostTranscripts, prepareClaudeConfigDir } from "../server/spec-builder";
+import {
+  buildSpec,
+  claudeProjectDirName,
+  copyHostTranscripts,
+  prepareClaudeConfigDir,
+  retiredClaudeFileMounts,
+} from "../server/spec-builder";
 
 const GiB = 1024 ** 3;
 let root: string;
@@ -39,8 +57,9 @@ function setup() {
 }
 
 describe("buildSpec", () => {
-  it("mounts the git toplevel and links the shared Claude items into a per-sandbox config dir", async () => {
+  it("mounts the git toplevel and shares the Claude items into a per-sandbox config dir", async () => {
     const { home, hostClaude, repo, env, paths } = setup();
+    writeFileSync(join(hostClaude, "CLAUDE.md"), "# rules");
     const settings = sandboxSettingsSchema.parse({ mounts: ["~/tools:ro", "/does-not-matter"] });
     const { spec } = await buildSpec({
       settings,
@@ -55,17 +74,16 @@ describe("buildSpec", () => {
     expect(spec.workspace).toBe(repo);
     expect(spec.key).toBe("workspace:wks_1");
     expect(spec.memory).toBe("3072m");
-    // The shared Claude items one by one, never the config dir with its credentials.
-    expect(spec.mounts).toEqual([
-      `${home}/tools:ro`,
-      "/does-not-matter",
-      `${hostClaude}/settings.json:ro`,
-      `${hostClaude}/skills:ro`,
-      paths.homesDir,
-    ]);
+    // The shared Claude folders one by one, never the config dir with its credentials; files are
+    // copied, not mounted.
+    expect(spec.mounts).toEqual([`${home}/tools:ro`, "/does-not-matter", `${hostClaude}/skills:ro`, paths.homesDir]);
     expect(spec.claudeConfigDir).toBe(join(paths.claudeConfigs, spec.name));
-    expect(readlinkSync(join(spec.claudeConfigDir, "settings.json"))).toBe(join(hostClaude, "settings.json"));
     expect(lstatSync(join(spec.claudeConfigDir, "skills")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(spec.claudeConfigDir, "CLAUDE.md")).isFile()).toBe(true);
+    expect(readFileSync(join(spec.claudeConfigDir, "CLAUDE.md"), "utf8")).toBe("# rules");
+    // Your settings.json is not shared by default: the sandbox keeps its own.
+    expect(existsSync(join(spec.claudeConfigDir, "settings.json"))).toBe(false);
+    expect(spec.hostClaudeSettings).toBe(join(hostClaude, "settings.json"));
     // Items missing on the host are not linked.
     expect(existsSync(join(spec.claudeConfigDir, "agents"))).toBe(false);
   });
@@ -288,7 +306,6 @@ describe("buildSpec for GSD Path", () => {
       memberWorktree,
       join(member, ".git"),
       "/nowhere/gone",
-      `${hostClaude}/settings.json:ro`,
       `${hostClaude}/skills:ro`,
       paths.homesDir,
     ]);
@@ -300,7 +317,6 @@ describe("buildSpec for GSD Path", () => {
       "member",
       "git",
       "member",
-      "claude",
       "claude",
       "agents",
     ]);
@@ -340,16 +356,80 @@ describe("buildSpec for GSD Path", () => {
 });
 
 describe("Claude config dir", () => {
-  it("drops links to items no longer shared and keeps what Claude wrote", () => {
+  it("drops links and copies of items no longer shared and keeps what Claude wrote", () => {
     const { hostClaude } = setup();
     mkdirSync(join(hostClaude, "agents"));
+    writeFileSync(join(hostClaude, "CLAUDE.md"), "# rules");
     const dir = join(root, "sandbox-config");
-    prepareClaudeConfigDir(dir, hostClaude, ["settings.json", "agents"]);
+    prepareClaudeConfigDir(dir, hostClaude, ["settings.json", "CLAUDE.md", "agents"]);
     writeFileSync(join(dir, ".claude.json"), "{}");
     prepareClaudeConfigDir(dir, hostClaude, ["settings.json"]);
     expect(existsSync(join(dir, "agents"))).toBe(false);
-    expect(lstatSync(join(dir, "settings.json")).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
+    expect(lstatSync(join(dir, "settings.json")).isFile()).toBe(true);
     expect(existsSync(join(dir, ".claude.json"))).toBe(true);
+  });
+
+  it("replaces a link to a shared file from before copies with a read-only copy", () => {
+    const { hostClaude } = setup();
+    const dir = join(root, "sandbox-config");
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(join(hostClaude, "settings.json"), join(dir, "settings.json"));
+    prepareClaudeConfigDir(dir, hostClaude, ["settings.json"]);
+    const stat = lstatSync(join(dir, "settings.json"));
+    expect(stat.isFile()).toBe(true);
+    expect(stat.mode & 0o777).toBe(0o444);
+    // Unshared, the link of old goes: the sandbox starts its own settings.
+    const other = join(root, "other-config");
+    mkdirSync(other, { recursive: true });
+    symlinkSync(join(hostClaude, "settings.json"), join(other, "settings.json"));
+    prepareClaudeConfigDir(other, hostClaude, []);
+    expect(existsSync(join(other, "settings.json"))).toBe(false);
+  });
+
+  it("follows a shared file the host replaced by renaming a new one over it", () => {
+    const { hostClaude } = setup();
+    const source = join(hostClaude, "CLAUDE.md");
+    writeFileSync(source, "v1");
+    const dir = join(root, "sandbox-config");
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
+    writeFileSync(`${source}.tmp`, "v2");
+    renameSync(`${source}.tmp`, source);
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("v2");
+  });
+
+  it("keeps the last copy while the host file is missing, and replaces one edited in the sandbox", () => {
+    const { hostClaude } = setup();
+    const source = join(hostClaude, "CLAUDE.md");
+    writeFileSync(source, "v1");
+    const dir = join(root, "sandbox-config");
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
+    rmSync(source);
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("v1");
+    writeFileSync(source, "v2");
+    rmSync(join(dir, "CLAUDE.md"), { force: true });
+    writeFileSync(join(dir, "CLAUDE.md"), "edited here");
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("v2");
+  });
+
+  it("leaves a local file that was never a copy in place", () => {
+    const { hostClaude } = setup();
+    writeFileSync(join(hostClaude, "CLAUDE.md"), "host");
+    const dir = join(root, "sandbox-config");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "CLAUDE.md"), "mine");
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("mine");
+  });
+
+  it("lists the file mounts older sandboxes still carry as retired", () => {
+    const { hostClaude } = setup();
+    const retired = retiredClaudeFileMounts(hostClaude, DEFAULT_CLAUDE_SHARED);
+    expect(retired.has(join(hostClaude, "settings.json"))).toBe(true);
+    expect(retired.has(join(hostClaude, "skills"))).toBe(false);
   });
 
   it("copies the project's host transcripts for an import without overwriting", () => {
