@@ -639,6 +639,9 @@ function guestEnv(spec) {
   env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
   if (spec.agentHome) env[spec.agentHome.env] = spec.agentHome.path;
   env.PASEO_SBX_SANDBOX = spec.name;
+  // Where agents put the files you open from Paseo: inside the workspace, so the path exists on
+  // the host too (the plugin's instructions name it; git ignores it).
+  env.PASEO_SBX_OUT = path.join(spec.workspace, '.sandbox-out');
   // guest-supervisor.py adds sbx's MCP gateway to Claude's MCP config; Codex's kit configures it.
   if (spec.agent === 'claude') env.PASEO_SBX_MCP_GATEWAY = '1';
   return env;

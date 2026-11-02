@@ -23,6 +23,8 @@ import {
   copyHostTranscripts,
   prepareClaudeConfigDir,
   retiredClaudeFileMounts,
+  sandboxClaudeInstructions,
+  writeCodexInstructions,
 } from "../server/spec-builder";
 
 const GiB = 1024 ** 3;
@@ -80,7 +82,14 @@ describe("buildSpec", () => {
     expect(spec.claudeConfigDir).toBe(join(paths.claudeConfigs, spec.name));
     expect(lstatSync(join(spec.claudeConfigDir, "skills")).isSymbolicLink()).toBe(true);
     expect(lstatSync(join(spec.claudeConfigDir, "CLAUDE.md")).isFile()).toBe(true);
-    expect(readFileSync(join(spec.claudeConfigDir, "CLAUDE.md"), "utf8")).toBe("# rules");
+    // Yours, then where agents leave the files you open from Paseo.
+    const memory = readFileSync(join(spec.claudeConfigDir, "CLAUDE.md"), "utf8");
+    expect(memory.startsWith("# rules\n\n# Files for the user (paseo-sbx)")).toBe(true);
+    expect(memory).toContain(`${spec.workspace}/.sandbox-out/`);
+    // Hidden from git through the repository's own exclude file, once.
+    await buildSpec({ settings, workspaceId: "wks_1", cwd: join(repo, "src"), paths, env, home });
+    const exclude = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
+    expect(exclude.split("\n").filter((line) => line === "/.sandbox-out/")).toHaveLength(1);
     // Your settings.json is not shared by default: the sandbox keeps its own.
     expect(existsSync(join(spec.claudeConfigDir, "settings.json"))).toBe(false);
     expect(spec.hostClaudeSettings).toBe(join(hostClaude, "settings.json"));
@@ -423,6 +432,31 @@ describe("Claude config dir", () => {
     writeFileSync(join(dir, "CLAUDE.md"), "mine");
     prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
     expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("mine");
+  });
+
+  it("gives CLAUDE.md the plugin's instructions, alone when yours is not shared", () => {
+    const { hostClaude } = setup();
+    writeFileSync(join(hostClaude, "CLAUDE.md"), "# mine");
+    const dir = join(root, "sandbox-config");
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"], "/work/app");
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(`# mine\n\n${sandboxClaudeInstructions("/work/app")}`);
+    prepareClaudeConfigDir(dir, hostClaude, [], "/work/app");
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(sandboxClaudeInstructions("/work/app"));
+    expect(sandboxClaudeInstructions("/work/app")).toContain("`/work/app/.sandbox-out/`");
+  });
+
+  it("keeps the plugin's block in Codex's AGENTS.md current and leaves the rest alone", () => {
+    const home = join(root, "codex-home");
+    writeCodexInstructions(home);
+    expect(existsSync(join(home, "AGENTS.md"))).toBe(false);
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "AGENTS.md"), "# Mine\nkeep this");
+    writeCodexInstructions(home);
+    writeCodexInstructions(home);
+    const text = readFileSync(join(home, "AGENTS.md"), "utf8");
+    expect(text.startsWith("# Mine\nkeep this\n\n<!-- paseo-sbx:begin -->")).toBe(true);
+    expect(text.match(/paseo-sbx:begin/g)).toHaveLength(1);
+    expect(text).toContain("$PASEO_SBX_OUT");
   });
 
   it("lists the file mounts older sandboxes still carry as retired", () => {

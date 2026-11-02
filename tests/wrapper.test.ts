@@ -278,6 +278,7 @@ describe("wrapper", () => {
     expect(guest.env.ANTHROPIC_MODEL).toBe("m");
     expect(guest.env.CLAUDE_CONFIG_DIR).toBe(sandbox.claudeConfigDir);
     expect(guest.env.PASEO_SBX_SANDBOX).toBe(sandbox.name);
+    expect(guest.env.PASEO_SBX_OUT).toBe(join(sandbox.workspace, ".sandbox-out"));
     expect(guest.env[SPEC_ENV]).toBeUndefined();
     expect(guest.env.PASEO_HOME).toBeUndefined();
     expect(guest.env.UNRELATED).toBeUndefined();
@@ -1007,7 +1008,7 @@ describe("Sandbox terminal", () => {
     const sandbox = spec({ env: {}, mcpServers: [], hostClaudeSettings: hostSettings });
     mkdirSync(join(root, "state", "workspaces"), { recursive: true });
     writeFileSync(join(root, "state", "workspaces", "wks_1.json"), JSON.stringify(sandbox));
-    const input = 'echo "in the guest: $PWD"; echo "config: $CLAUDE_CONFIG_DIR"; echo "codex: $CODEX_HOME"; echo "base: $ANTHROPIC_BASE_URL"\n';
+    const input = 'echo "in the guest: $PWD"; echo "config: $CLAUDE_CONFIG_DIR"; echo "codex: $CODEX_HOME"; echo "base: $ANTHROPIC_BASE_URL"; echo "out: $PASEO_SBX_OUT"\n';
     const result = run(["--paseo-sbx-shell"], { env: { PASEO_WORKSPACE_ID: "wks_1" }, input });
     expect(result.status).toBe(0);
     expect(result.stdout.startsWith(TITLE)).toBe(true);
@@ -1015,6 +1016,7 @@ describe("Sandbox terminal", () => {
     expect(result.stdout).toContain(`config: ${sandbox.claudeConfigDir}`);
     expect(result.stdout).toContain(`codex: ${join(sandbox.homesDir, "codex")}`);
     expect(result.stdout).toContain("base: http://gateway.test:1");
+    expect(result.stdout).toContain(`out: ${join(workspace, ".sandbox-out")}`);
     expect(result.calls.map((call) => call.args[0])).toContain("create");
     const shell = result.calls.at(-1)?.args ?? [];
     expect(shell.slice(0, 5)).toEqual(["exec", "-it", "-w", workspace, "--env-file"]);

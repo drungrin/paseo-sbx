@@ -132,6 +132,7 @@ Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_`
 
 - **Sandbox terminal** in the workspace's **+** menu, or **Open sandbox terminal** in the command center, opens a shell in the VM, in the workspace, with the sessions' Claude config and login.
 - `PASEO_SBX_SANDBOX` is set to the sandbox name, so scripts can detect they run in a sandbox.
+- `PASEO_SBX_OUT` is `<workspace>/.sandbox-out`, where agents leave files you open from the chat. Claude's user memory (`CLAUDE.md` in the sandbox's config dir, after yours) and Codex's `AGENTS.md` (a marked block in its shared home) say so; `/.sandbox-out/` goes into the repository's `.git/info/exclude` once.
 - k3d needs two flags inside the VM, which has no `/dev/kmsg`:
   `--volume "/dev/null:/dev/kmsg@server:*" --k3s-arg "--kube-proxy-arg=conntrack-max-per-core=0@server:*"`.
 - Build outputs record absolute cache paths. When the same checkout is built on the host and in a sandbox (or in two sandboxes), restore before testing: for .NET, `dotnet test --no-build` can otherwise pass while running no tests.

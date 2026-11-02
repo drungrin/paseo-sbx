@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, totalmem } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { AGENTS, type AgentId } from "../shared/agents";
 import { mcpAutoLoad } from "../shared/mcp";
 import { LEGACY_CLAUDE_SHARED, type SandboxSettings } from "../shared/settings";
@@ -186,16 +186,41 @@ function writeAtomic(path: string, data: Buffer | string, mode: number): void {
   renameSync(temp, path);
 }
 
+/** Where agents in a sandbox put files you open from Paseo: inside the workspace, hidden from git. */
+export const SANDBOX_OUT_DIR = ".sandbox-out";
+
+/**
+ * Tells Claude, through its user memory, where to put the files you will open: the host has only
+ * the workspace and the mounted folders at the paths an agent sees, so a file under the guest's
+ * `~` or `/tmp` cannot open from a link in the chat.
+ */
+export function sandboxClaudeInstructions(workspace: string): string {
+  return [
+    "# Files for the user (paseo-sbx)",
+    "",
+    "You run in a Docker Sandboxes VM. The user reads your replies in Paseo on the host, where only this workspace and the mounted folders exist at the paths you see.",
+    `Put every file the user should open that is not part of the code you change (reports, reviews, exports, notes) under \`${join(workspace, SANDBOX_OUT_DIR)}/\` (also \`$PASEO_SBX_OUT\`; git ignores it), and link it by its absolute path.`,
+    "Files under `~` or `/tmp` exist only in the VM: the user cannot open them.",
+    "",
+  ].join("\n");
+}
+
 /**
  * Per-sandbox Claude config dir: writable state (`.claude.json`, `settings.json`, transcripts)
  * stays separate per sandbox. Shared folders are symlinks into the host config dir, mounted
  * read-only. Shared files are copied instead, read-only, at every session: a file mount keeps the
  * inode it started with, and Claude (or an editor) saving a file by renaming a new one over it
  * leaves the sandbox with an unreadable mount until it restarts. The record of what was copied
- * tells the plugin's copies from files Claude or you put there.
+ * tells the plugin's copies from files Claude or you put there. With the sandbox's workspace,
+ * `CLAUDE.md` always carries the plugin's instructions, after yours when you share it.
  * Paseo reads transcripts through the session's CLAUDE_CONFIG_DIR, so rewind keeps working.
  */
-export function prepareClaudeConfigDir(dir: string, hostClaudeDir: string, shared: readonly string[]): void {
+export function prepareClaudeConfigDir(
+  dir: string,
+  hostClaudeDir: string,
+  shared: readonly string[],
+  workspace: string | null = null,
+): void {
   mkdirSync(join(dir, ".paseo-sbx"), { recursive: true });
   const recordPath = join(dir, SHARED_COPIES);
   let copies: Record<string, string> = {};
@@ -205,7 +230,9 @@ export function prepareClaudeConfigDir(dir: string, hostClaudeDir: string, share
     copies = {};
   }
   const before = JSON.stringify(copies);
+  const instructions = workspace ? sandboxClaudeInstructions(workspace) : null;
   const wanted = new Set(shared);
+  if (instructions) wanted.add("CLAUDE.md");
   for (const entry of readdirSync(dir)) {
     if (wanted.has(entry)) continue;
     const target = join(dir, entry);
@@ -219,6 +246,35 @@ export function prepareClaudeConfigDir(dir: string, hostClaudeDir: string, share
       delete copies[entry];
     }
   }
+
+  // Writes the plugin's copy of an item unless a file of Claude's or yours holds its place.
+  const place = (item: string, data: Buffer, origin: string) => {
+    const target = join(dir, item);
+    const stat = lstatOrNull(target);
+    if (stat !== null && stat.isSymbolicLink() && !isWithin(readlinkSync(target), hostClaudeDir)) {
+      console.warn(`[paseo-sbx] ${target} is a link of yours and hides ${origin}`);
+      return;
+    }
+    if (stat !== null && !stat.isSymbolicLink() && copies[item] === undefined) {
+      console.warn(`[paseo-sbx] ${target} is a local copy and hides ${origin}`);
+      return;
+    }
+    const hash = sha256(data);
+    if (stat !== null && !stat.isSymbolicLink()) {
+      const current = sha256(readFileSync(target));
+      if (current === hash) {
+        copies[item] = hash;
+        return;
+      }
+      if (current !== copies[item]) console.warn(`[paseo-sbx] ${target} was edited in the sandbox: replaced by ${origin}`);
+    }
+    // A link from before copies existed is replaced like a stale copy.
+    writeAtomic(target, data, 0o444);
+    copies[item] = hash;
+  };
+  const withInstructions = (item: string, data: Buffer) =>
+    item === "CLAUDE.md" && instructions ? Buffer.concat([data, Buffer.from(`\n\n${instructions}`)]) : data;
+
   for (const item of shared) {
     const source = join(hostClaudeDir, item);
     const target = join(dir, item);
@@ -228,10 +284,11 @@ export function prepareClaudeConfigDir(dir: string, hostClaudeDir: string, share
     } catch {
       // Missing on the host: a copy already here stays, so a file being replaced costs nothing.
       if (copies[item] !== undefined) console.warn(`[paseo-sbx] ${source} is missing: ${target} keeps the last copy`);
+      else if (item === "CLAUDE.md" && instructions) place(item, Buffer.from(instructions), "the plugin's instructions");
       continue;
     }
-    const stat = lstatOrNull(target);
     if (sourceIsDir) {
+      const stat = lstatOrNull(target);
       if (stat === null) {
         symlinkSync(source, target);
       } else if (stat.isSymbolicLink()) {
@@ -244,29 +301,30 @@ export function prepareClaudeConfigDir(dir: string, hostClaudeDir: string, share
       }
       continue;
     }
-    if (stat !== null && stat.isSymbolicLink() && !isWithin(readlinkSync(target), hostClaudeDir)) {
-      console.warn(`[paseo-sbx] ${target} is a link of yours and hides the shared ${source}`);
-      continue;
-    }
-    if (stat !== null && !stat.isSymbolicLink() && copies[item] === undefined) {
-      console.warn(`[paseo-sbx] ${target} is a local copy and hides the shared ${source}`);
-      continue;
-    }
-    const data = readFileSync(source);
-    const hash = sha256(data);
-    if (stat !== null && !stat.isSymbolicLink()) {
-      const current = sha256(readFileSync(target));
-      if (current === hash) {
-        copies[item] = hash;
-        continue;
-      }
-      if (current !== copies[item]) console.warn(`[paseo-sbx] ${target} was edited in the sandbox: replaced by ${source}`);
-    }
-    // A link from before copies existed is replaced like a stale copy.
-    writeAtomic(target, data, 0o444);
-    copies[item] = hash;
+    place(item, withInstructions(item, readFileSync(source)), `the shared ${source}`);
   }
+  if (instructions && !shared.includes("CLAUDE.md")) place("CLAUDE.md", Buffer.from(instructions), "the plugin's instructions");
   if (JSON.stringify(copies) !== before) writeAtomic(recordPath, `${JSON.stringify(copies, null, 2)}\n`, 0o600);
+}
+
+/**
+ * Hides the sandbox's out dir from git through the repository's `info/exclude`, which stays on
+ * this machine: one line, added once, shared by every worktree of the repository.
+ */
+export async function excludeSandboxOut(workspace: string): Promise<void> {
+  const file = await git(workspace, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]);
+  if (!file) return;
+  const line = `/${SANDBOX_OUT_DIR}/`;
+  let current = "";
+  try {
+    current = readFileSync(file, "utf8");
+  } catch {
+    current = "";
+  }
+  if (current.split("\n").some((entry) => entry.trim() === line)) return;
+  mkdirSync(dirname(file), { recursive: true });
+  const separator = current === "" || current.endsWith("\n") ? "" : "\n";
+  writeFileSync(file, `${current}${separator}# Files agents in Docker Sandboxes leave for you (paseo-sbx)\n${line}\n`);
 }
 
 /**
@@ -286,6 +344,41 @@ export function retiredClaudeFileMounts(hostClaudeDir: string, shared: readonly 
     }
   }
   return retired;
+}
+
+const CODEX_BLOCK_BEGIN = "<!-- paseo-sbx:begin -->";
+const CODEX_BLOCK_END = "<!-- paseo-sbx:end -->";
+
+/**
+ * The same instructions for Codex, in the global AGENTS.md of its home. That home is shared by
+ * every sandbox, so the block names the out dir by its variable. Only the plugin's block is
+ * rewritten; anything else in the file stays.
+ */
+export function writeCodexInstructions(codexHome: string): void {
+  if (!isDirectory(codexHome)) return;
+  const file = join(codexHome, "AGENTS.md");
+  const block = [
+    CODEX_BLOCK_BEGIN,
+    "# Files for the user (paseo-sbx)",
+    "",
+    "You run in a Docker Sandboxes VM. The user reads your replies in Paseo on the host, where only the workspace and the mounted folders exist at the paths you see.",
+    "Put every file the user should open that is not part of the code you change (reports, reviews, exports, notes) under `$PASEO_SBX_OUT` (inside the workspace; git ignores it), and link it by its absolute path.",
+    "Files under `~` or `/tmp` exist only in the VM: the user cannot open them.",
+    CODEX_BLOCK_END,
+  ].join("\n");
+  let current = "";
+  try {
+    current = readFileSync(file, "utf8");
+  } catch {
+    current = "";
+  }
+  const begin = current.indexOf(CODEX_BLOCK_BEGIN);
+  const end = current.indexOf(CODEX_BLOCK_END, begin);
+  const next =
+    begin >= 0 && end > begin
+      ? `${current.slice(0, begin)}${block}${current.slice(end + CODEX_BLOCK_END.length)}`
+      : `${current}${current === "" || current.endsWith("\n") ? "" : "\n"}${current === "" ? "" : "\n"}${block}\n`;
+  if (next !== current) writeAtomic(file, next, 0o644);
 }
 
 /** Claude Code's transcript dir name for a project path (same encoding as Paseo's lookup). */
@@ -369,7 +462,11 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     .map((mount) => ({ name: relative(home, mount.path), target: mount.path }));
 
   const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
-  if (input.prepare !== false) prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared);
+  if (input.prepare !== false) {
+    prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared, directory);
+    await excludeSandboxOut(directory);
+    writeCodexInstructions(join(paths.homesDir, "codex"));
+  }
 
   const fileValues = readEnvFile(envFilePath(settings, paths, home));
   const forwarded: Record<string, string> = {};

@@ -38,7 +38,9 @@ export async function recordWorkspace(
 ): Promise<void> {
   if (!WORKSPACE_ID.test(workspaceId) || !existsSync(directory)) return;
   const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
-  if (existsSync(spec.claudeConfigDir)) prepareClaudeConfigDir(spec.claudeConfigDir, paths.hostClaudeDir, settings.claudeShared);
+  if (existsSync(spec.claudeConfigDir)) {
+    prepareClaudeConfigDir(spec.claudeConfigDir, paths.hostClaudeDir, settings.claudeShared, spec.workspace);
+  }
   rememberWorkspaceSandbox(paths, workspaceId, spec);
 }
 

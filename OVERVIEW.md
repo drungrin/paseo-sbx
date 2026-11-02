@@ -8,6 +8,8 @@ Sandboxes come from a Docker Sandboxes instance that belongs to Paseo: your own 
 
 Each sandbox gets its own Claude config directory, with its own settings: they start as sbx's kit sets them, and the plugins you install or the settings you change inside a sandbox stay in that sandbox. From your Claude config directory, skills, agents, commands and rules are linked in read-only and `CLAUDE.md` is copied at every session. Every session also gets the `env` of your Claude settings, where a gateway or a key usually lives. Transcripts and state stay per sandbox. Paseo's MCP server and any loopback API endpoint your Claude settings use are relayed into the VM automatically.
 
+Paseo opens a file linked in the chat from the host, where only the workspace and the mounted folders exist at the paths an agent sees. Agents are told to leave the files you will open under `.sandbox-out/` in the workspace (`$PASEO_SBX_OUT`), which the plugin hides from git through the repository's `.git/info/exclude`. A file an agent writes under the VM's `~` or `/tmp` does not open from the chat: copy it out with `XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx cp <sandbox>:<path> .`.
+
 Other MCP servers reach agents through each sandbox's sbx MCP gateway. Register remote ones in the **MCP servers** tab of **Docker Sandboxes**, signing in with OAuth or giving an API key, and choose which load into every sandbox; a workspace's **Sandbox dashboard** turns each on or off for its repository. sbx signs in on this host and adds the token to the gateway's requests, so it never enters a VM.
 
 ## Setup
