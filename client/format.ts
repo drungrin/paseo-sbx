@@ -61,6 +61,43 @@ export function parseMemoryFlag(value: string | null): number | null {
   return Number(match[1]) * (match[2].toLowerCase() === "g" ? 1024 : 1);
 }
 
+export interface ResourceChangeView {
+  resource: "memory" | "cpus" | "dockerDisk";
+  created: string | null;
+  configured: string | null;
+}
+
+const RESOURCE_NAMES: Record<ResourceChangeView["resource"], string> = {
+  memory: "Memory",
+  cpus: "CPUs",
+  dockerDisk: "Docker disk",
+};
+
+function resourceValue(resource: ResourceChangeView["resource"], value: string | null): string {
+  if (resource === "cpus") return value === "0" ? "every host CPU" : value === "1" ? "1 CPU" : `${value} CPUs`;
+  if (resource === "dockerDisk" && value === null) return "sbx's 10 GB";
+  const mib = parseMemoryFlag(value);
+  return mib === null ? (value ?? "unknown") : formatMiB(mib);
+}
+
+function joinNames(names: string[]): string {
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** "Docker disk changed since the sandbox was created", naming what did. */
+export function resourceChangeTitle(changes: readonly ResourceChangeView[]): string {
+  const names = changes.map((change) => RESOURCE_NAMES[change.resource]);
+  return `${names.length > 0 ? joinNames(names) : "Resources"} changed since the sandbox was created`;
+}
+
+/** "Docker disk: 60 GiB when created, 100 GiB now", one per change. */
+export function resourceChangeLines(changes: readonly ResourceChangeView[]): string[] {
+  return changes.map(
+    (change) =>
+      `${RESOURCE_NAMES[change.resource]}: ${resourceValue(change.resource, change.created)} when created, ${resourceValue(change.resource, change.configured)} now`,
+  );
+}
+
 export function formatBytes(bytes: number | null): string {
   if (bytes === null) return "—";
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;

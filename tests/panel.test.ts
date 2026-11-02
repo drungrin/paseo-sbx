@@ -14,6 +14,7 @@ function description(overrides: Partial<Description> = {}): Description {
     cpus: 0,
     repoCpus: null,
     resourcesApplied: true,
+    resourceChanges: [],
     rssMiB: 2048,
     workspace: "/home/me/app",
     mounts: [],
@@ -45,6 +46,10 @@ describe("panelNeeds", () => {
         ],
         template: { configured: "docker.io/library/app:2", sandbox: "docker.io/library/app:1", status: "diverged" },
         resourcesApplied: false,
+        resourceChanges: [
+          { resource: "cpus", created: "8", configured: "0" },
+          { resource: "dockerDisk", created: "60g", configured: "100g" },
+        ],
         mounts: [
           { path: "/home/me/.config/gh", readOnly: true, source: "repo", exists: true, applied: false },
           { path: "/home/me/.gone", readOnly: false, source: "settings", exists: false, applied: null },
@@ -65,13 +70,16 @@ describe("panelNeeds", () => {
     expect(needs.map((need) => [need.tone, need.tab, need.title])).toEqual([
       ["danger", "template", "Save template failed"],
       ["warning", "template", "The repository's template changed"],
-      ["warning", "resources", "Memory or CPUs changed since the sandbox was created"],
+      ["warning", "resources", "CPUs and Docker disk changed since the sandbox was created"],
       ["warning", "mounts", "2 mount changes wait for a recreation"],
       ["warning", "mounts", "1 mount missing on the host"],
       ["warning", "variables", "1 variable without a value"],
       ["warning", "services", "A port is not published"],
     ]);
     expect(needs[1].detail).toContain("app:1");
+    expect(needs[2].detail).toBe(
+      "CPUs: 8 CPUs when created, every host CPU now. Docker disk: 60 GiB when created, 100 GiB now. Recreate it to apply.",
+    );
     expect(needs[3].detail).toBe("+ ~/.config/gh   − ~/.old");
     expect(needs[5].detail).toBe("UNSET");
   });

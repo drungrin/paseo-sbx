@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { homeOf, operationLabel, plural, shortRef, tildify } from "./format";
+import { homeOf, operationLabel, plural, resourceChangeLines, resourceChangeTitle, shortRef, tildify } from "./format";
 import type { Theme, Tone } from "./kit";
 import type { Description } from "./queries";
 
@@ -58,10 +58,11 @@ export function panelNeeds(data: Description): PanelNeed[] {
     });
   }
   if (data.resourcesApplied === false) {
+    const lines = resourceChangeLines(data.resourceChanges);
     needs.push({
       tone: "warning",
-      title: "Memory or CPUs changed since the sandbox was created",
-      detail: "Recreate it to apply them.",
+      title: resourceChangeTitle(data.resourceChanges),
+      detail: [...lines, "Recreate it to apply."].join(". "),
       tab: "resources",
     });
   }

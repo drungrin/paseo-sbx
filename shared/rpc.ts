@@ -144,6 +144,19 @@ export const describeSandboxRpc = defineRpc({
     repoCpus: z.number().nullable(),
     /** Whether the sandbox has the memory, CPUs and Docker disk configured now; null when unknown. */
     resourcesApplied: z.boolean().nullable(),
+    /**
+     * Each resource that differs, as sbx takes it: memory `8192m`, CPUs a count (`0` is every host
+     * CPU), Docker disk `60g` (null is sbx's). Empty when they match or are unknown.
+     */
+    resourceChanges: z
+      .array(
+        z.object({
+          resource: z.enum(["memory", "cpus", "dockerDisk"]),
+          created: z.string().nullable(),
+          configured: z.string().nullable(),
+        }),
+      )
+      .default([]),
     /** Resident memory of the running VM; null when stopped or unknown. */
     rssMiB: z.number().nullable(),
     workspace: z.string(),

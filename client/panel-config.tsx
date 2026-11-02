@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { MountSource } from "../shared/spec";
 import { invalidEnvNames, invalidMounts } from "../shared/spec";
-import { errorMessage, formatMiB, homeOf, plural, tildify } from "./format";
+import { errorMessage, formatMiB, homeOf, plural, resourceChangeLines, resourceChangeTitle, tildify } from "./format";
 import { Figures, Frame } from "./frame";
 import {
   Actions,
@@ -91,8 +91,8 @@ export function ResourcesTab({ data, theme, compact, header }: PanelTabProps) {
         <RecreateCallout
           data={data}
           theme={theme}
-          title="The sandbox was created with other resources"
-          detail="Recreate it to apply the ones below."
+          title={resourceChangeTitle(data.resourceChanges)}
+          detail={[...resourceChangeLines(data.resourceChanges), "Recreate it to apply the settings."].join(". ")}
         />
       ) : null}
       <Figures>

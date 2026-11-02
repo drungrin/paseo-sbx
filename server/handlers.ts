@@ -65,17 +65,28 @@ import {
   type TemplateInfo,
 } from "./templates";
 
+interface ResourceChange {
+  resource: "memory" | "cpus" | "dockerDisk";
+  created: string | null;
+  configured: string | null;
+}
+
 /**
- * Whether the sandbox has the memory, CPUs and Docker disk the settings select now; null when its
- * record predates them. CPUs are compared only once recorded; a sandbox without a recorded disk was
- * created before the plugin sized it, with sbx's.
+ * Where the sandbox's memory, CPUs and Docker disk differ from what the settings select now; null
+ * when its record predates them. CPUs are compared only once recorded; a sandbox without a
+ * recorded disk was created before the plugin sized it, with sbx's.
  */
-function resourcesApplied(state: SandboxState | null, spec: SandboxSpec): boolean | null {
+function resourceChanges(state: SandboxState | null, spec: SandboxSpec): ResourceChange[] | null {
   if (!state?.memory) return null;
-  if (state.memory !== spec.memory) return false;
-  if (state.cpus !== undefined && state.cpus !== spec.cpus) return false;
-  if ((state.dockerDisk ?? null) !== spec.dockerDisk) return false;
-  return true;
+  const changes: ResourceChange[] = [];
+  if (state.memory !== spec.memory) changes.push({ resource: "memory", created: state.memory, configured: spec.memory });
+  if (state.cpus !== undefined && state.cpus !== spec.cpus) {
+    changes.push({ resource: "cpus", created: String(state.cpus), configured: String(spec.cpus) });
+  }
+  if ((state.dockerDisk ?? null) !== spec.dockerDisk) {
+    changes.push({ resource: "dockerDisk", created: state.dockerDisk ?? null, configured: spec.dockerDisk });
+  }
+  return changes;
 }
 
 /** Compares what the repo selects now with what the sandbox was created from, by image ID. */
@@ -174,6 +185,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const state = readSandboxState(paths, spec.name);
     const created = sandbox && state?.mounts ? new Set(state.mounts) : null;
     const retired = retiredClaudeFileMounts(paths.hostClaudeDir, settings.claudeShared);
+    const changes = sandbox ? resourceChanges(state, spec) : null;
     return {
       key: spec.key,
       name: spec.name,
@@ -184,7 +196,8 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       repoMemoryGiB: settings.repos[spec.repoKey]?.memoryGiB ?? null,
       cpus: spec.cpus,
       repoCpus: settings.repos[spec.repoKey]?.cpus ?? null,
-      resourcesApplied: sandbox ? resourcesApplied(state, spec) : null,
+      resourcesApplied: changes === null ? null : changes.length === 0,
+      resourceChanges: changes ?? [],
       rssMiB: sandbox?.status === "running" ? (vmMemoryMiB(paths).get(spec.name) ?? null) : null,
       workspace: spec.workspace,
       mounts: built.mounts.map((mount) => ({
