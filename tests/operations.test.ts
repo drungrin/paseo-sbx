@@ -39,7 +39,7 @@ beforeEach(() => {
   mkdirSync(workspace);
   execFileSync("git", ["-C", workspace, "init", "-q"]);
   settings = sandboxSettingsSchema.parse({ claudeShared: [], isolation: "directory", allowImageDownloads: true });
-  deps = { paths, readSettings: async () => settings };
+  deps = { paths, readSettings: async () => settings, updateGsdSessions: async () => {} };
 });
 
 afterEach(() => {

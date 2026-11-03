@@ -15,6 +15,7 @@ import {
   Pill,
   Section,
   Stat,
+  SwitchRow,
   mono,
   text,
   tint,
@@ -320,65 +321,131 @@ export function MountsTab({ data, theme, compact, header }: PanelTabProps) {
           />
         </Section>
       ) : null}
-      {data.gsdPath ? <GsdPath gsdPath={data.gsdPath} theme={theme} compact={compact} home={home} /> : null}
+      {data.gsdPath ? (
+        <GsdPath
+          gsdPath={data.gsdPath}
+          theme={theme}
+          compact={compact}
+          home={home}
+          ready={settings.status === "ready"}
+          onChoose={(gsdPath) => save({ gsdPath: gsdPath ?? undefined })}
+        />
+      ) : null}
     </Frame>
   );
 }
+
+const SESSIONS_VIEW: Record<NonNullable<Description["gsdPath"]>["sessions"], { tone: "success" | "neutral" | "warning"; label: string }> = {
+  listed: { tone: "success", label: "Counted in GSD Path" },
+  "not-listed": { tone: "neutral", label: "Listed at the next session" },
+  "no-config": { tone: "neutral", label: "GSD Path is not set up on this host" },
+  "invalid-config": { tone: "warning", label: "GSD Path's config is unreadable" },
+};
 
 function GsdPath({
   gsdPath,
   theme,
   compact,
   home,
+  ready,
+  onChoose,
 }: {
   gsdPath: NonNullable<Description["gsdPath"]>;
   theme: Theme;
   compact: boolean;
   home: string | null;
+  ready: boolean;
+  onChoose(on: boolean | null): Promise<void>;
 }) {
+  const [error, setError] = useState<string | null>(null);
+  const sessions = gsdPath.enabled ? SESSIONS_VIEW[gsdPath.sessions] : { tone: "neutral" as const, label: "Not counted" };
+  function choose(on: boolean | null) {
+    setError(null);
+    onChoose(on).catch((caught) => setError(errorMessage(caught)));
+  }
   return (
     <Section
       theme={theme}
-      overline=".project/MEMBERS.md"
-      title="GSD Path members"
+      overline="GSD Path"
+      title="GSD Path integration"
       aside={
         <Pill
           theme={theme}
           tone={gsdPath.enabled ? "success" : "neutral"}
           dot
-          label={gsdPath.enabled ? "Mounted" : "Off in the settings"}
+          label={gsdPath.enabled ? "On" : "Off"}
         />
       }
-      gap={4}
+      gap={10}
     >
-      {gsdPath.members.length === 0 ? (
-        <Note theme={theme}>MEMBERS.md lists no members.</Note>
-      ) : (
-        <View role="list">
-          {gsdPath.members.map((member, index) => (
-            <ListRow
-              key={member.name}
-              theme={theme}
-              first={index === 0}
-              stacked={compact}
-              title={member.name}
-              detail={<Text style={mono(theme, 12, true)}>{tildify(member.path, home)}</Text>}
-              aside={
-                member.available ? (
-                  <Pill theme={theme} label="Writable" />
-                ) : (
-                  <Pill theme={theme} tone="danger" dot label="No checkout on the host" />
-                )
-              }
-            />
-          ))}
-        </View>
-      )}
+      <SwitchRow
+        theme={theme}
+        label="On for this repository"
+        value={gsdPath.enabled}
+        disabled={!ready}
+        onValueChange={(next) => choose(next)}
+        hint="Mounts ~/.gsd-path and the member checkouts, and lists this sandbox's sessions in GSD Path's usage."
+      />
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <Pill
+          theme={theme}
+          tone={gsdPath.repoChoice === null ? "neutral" : "accent"}
+          label={
+            gsdPath.repoChoice === null
+              ? `${gsdPath.global ? "On" : "Off"} from the plugin settings`
+              : "Set for this repository"
+          }
+        />
+        {gsdPath.repoChoice !== null ? (
+          <Button theme={theme} small kind="quiet" label="Use the default" disabled={!ready} onPress={() => choose(null)} />
+        ) : null}
+      </View>
+      <ListRow
+        theme={theme}
+        first
+        stacked={compact}
+        title="Sessions"
+        detail={<Text style={mono(theme, 12, true)}>{tildify(gsdPath.sessionsFolder, home)}</Text>}
+        aside={<Pill theme={theme} tone={sessions.tone} dot label={sessions.label} />}
+      />
+      <View style={{ gap: 4 }}>
+        <Text style={text(theme, 13, "600")}>Members · .project/MEMBERS.md</Text>
+        {gsdPath.members.length === 0 ? (
+          <Note theme={theme}>MEMBERS.md lists no members.</Note>
+        ) : (
+          <View role="list">
+            {gsdPath.members.map((member, index) => (
+              <ListRow
+                key={member.name}
+                theme={theme}
+                first={index === 0}
+                stacked={compact}
+                title={member.name}
+                detail={<Text style={mono(theme, 12, true)}>{tildify(member.path, home)}</Text>}
+                aside={
+                  !gsdPath.enabled ? (
+                    <Pill theme={theme} label="Not mounted" />
+                  ) : member.available ? (
+                    <Pill theme={theme} label="Writable" />
+                  ) : (
+                    <Pill theme={theme} tone="danger" dot label="No checkout on the host" />
+                  )
+                }
+              />
+            ))}
+          </View>
+        )}
+      </View>
       <Note theme={theme}>
         {gsdPath.enabled
-          ? "The sandbox mounts ~/.gsd-path, also in the agent's home, and the member checkouts. New worktrees go under your ~/.gsd-path/projects."
-          : "Turn on Mount GSD Path in the plugin settings to give the sandbox ~/.gsd-path and the member checkouts."}
+          ? `The sandbox mounts ~/.gsd-path, also in the agent's home, and the member checkouts. New worktrees go under your ~/.gsd-path/projects. The sessions folder is listed in ${tildify(gsdPath.configPath, home)}, so GSD Path's usage and cost count this sandbox's agents. Mount changes apply when the sandbox is recreated.`
+          : "Turn it on to give the sandbox ~/.gsd-path and the member checkouts, and to count its sessions in GSD Path's usage."}
       </Note>
+      {error ? (
+        <Note theme={theme} tone="danger">
+          {error}
+        </Note>
+      ) : null}
     </Section>
   );
 }

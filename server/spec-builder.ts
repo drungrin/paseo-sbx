@@ -20,7 +20,7 @@ import { homedir, totalmem } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { AGENTS, type AgentId } from "../shared/agents";
 import { mcpAutoLoad } from "../shared/mcp";
-import { LEGACY_CLAUDE_SHARED, type SandboxSettings } from "../shared/settings";
+import { LEGACY_CLAUDE_SHARED, gsdPathEnabled, type SandboxSettings } from "../shared/settings";
 import {
   SPEC_VERSION,
   formatMount,
@@ -431,7 +431,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   add(repo?.mounts ?? [], "repo");
   // A coordinator's agents work in its member checkouts and in worktrees under ~/.gsd-path, where
   // the GSD Path runtime lives too. It also appears in the guest's home, where the runtime looks.
-  const gsdPath = usesGsdPath(directory) ? { enabled: settings.gsdPath, members: gsdPathMembers(directory, home) } : null;
+  const gsdPath = usesGsdPath(directory) ? { enabled: gsdPathEnabled(settings, repoKey), members: gsdPathMembers(directory, home) } : null;
   if (gsdPath?.enabled) {
     requested.push({ path: join(home, ".gsd-path"), readOnly: false, source: "gsd-path" });
     for (const member of gsdPath.members) {

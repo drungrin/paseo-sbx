@@ -357,6 +357,22 @@ describe("buildSpec for GSD Path", () => {
     expect(built.gsdPath?.members[0]).toEqual({ name: "code", path: member });
   });
 
+  it("lets the repository's GSD Path choice win over the global one", async () => {
+    const { home, repo, env, paths } = setup();
+    coordinator(home, repo);
+    const probe = await buildSpec({ settings: sandboxSettingsSchema.parse({}), workspaceId: null, cwd: repo, paths, env, home });
+    const repoKey = probe.spec.repoKey;
+    const off = sandboxSettingsSchema.parse({ claudeShared: [], repos: { [repoKey]: { gsdPath: false } } });
+    const builtOff = await buildSpec({ settings: off, workspaceId: null, cwd: repo, paths, env, home });
+    expect(builtOff.gsdPath?.enabled).toBe(false);
+    expect(builtOff.spec.mounts).toEqual([paths.homesDir]);
+    expect(builtOff.spec.env.GSD_PATH_WORKTREE_ROOT).toBeUndefined();
+    const on = sandboxSettingsSchema.parse({ gsdPath: false, claudeShared: [], repos: { [repoKey]: { gsdPath: true } } });
+    const builtOn = await buildSpec({ settings: on, workspaceId: null, cwd: repo, paths, env, home });
+    expect(builtOn.gsdPath?.enabled).toBe(true);
+    expect(builtOn.spec.mounts).toContain(join(home, ".gsd-path"));
+  });
+
   it("reports no GSD Path for a repository without a .gsd-path dir", async () => {
     const { home, repo, env, paths } = setup();
     const built = await buildSpec({ settings: sandboxSettingsSchema.parse({}), workspaceId: null, cwd: repo, paths, env, home });

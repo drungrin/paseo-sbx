@@ -1,6 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { existsSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
+import { join } from "node:path";
 import {
   addMcpServerRpc,
   cancelMcpSignInRpc,
@@ -36,6 +37,7 @@ import { activeAgentsBySandbox } from "./agents";
 import { addMcpServer, listMcpServers, readLoadedMcp, removeMcpServer } from "./mcp";
 import { cancelSignIn, finishSignIn, getSignIn, startSignIn } from "./mcp-signin";
 import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
+import { gsdDaemonConfigPath, gsdSessionsStatus } from "./gsd-sessions";
 import { getOperation, operationsFor, runOperation } from "./operations";
 import { actualPublications, internalPorts, publishPort, readListeners, unpublishPort } from "./ports";
 import { recreateBlockers, recreateSandbox } from "./recreate";
@@ -212,7 +214,12 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
         : [],
       gsdPath: built.gsdPath && {
         enabled: built.gsdPath.enabled,
+        global: settings.gsdPath,
+        repoChoice: settings.repos[spec.repoKey]?.gsdPath ?? null,
         members: built.gsdPath.members.map((member) => ({ ...member, available: existsSync(member.path) })),
+        sessions: gsdSessionsStatus(join(spec.claudeConfigDir, "projects")),
+        sessionsFolder: join(spec.claudeConfigDir, "projects"),
+        configPath: gsdDaemonConfigPath(),
       },
       env: forwardedEnvNames(settings, spec.repoKey).map((name) => ({
         name,

@@ -87,6 +87,14 @@ export function panelNeeds(data: Description): PanelNeed[] {
       tab: "mounts",
     });
   }
+  if (data.gsdPath?.enabled && data.gsdPath.sessions === "invalid-config") {
+    needs.push({
+      tone: "warning",
+      title: "GSD Path's config is unreadable",
+      detail: `${short(data.gsdPath.configPath)} is not a JSON object, so its usage leaves out this sandbox's sessions. Fix the file; the plugin lists them at the next session.`,
+      tab: "mounts",
+    });
+  }
   const missingMounts = data.mounts.filter((mount) => !mount.exists && mount.source !== "member");
   if (missingMounts.length > 0) {
     needs.push({

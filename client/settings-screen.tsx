@@ -270,8 +270,8 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             onChangeText={update("mounts")}
           />
           <SettingsSwitch
-            label="Mount GSD Path"
-            hint="In repositories that use GSD Path: ~/.gsd-path and the member checkouts in .project/MEMBERS.md, writable."
+            label="GSD Path integration"
+            hint="In repositories that use GSD Path: mounts ~/.gsd-path and the member checkouts in .project/MEMBERS.md, writable, and lists the sandboxes' session folders in ~/.gsd-path/daemon.json so GSD Path's usage and cost count their agents. A repository can choose for itself in its sandbox dashboard."
             value={draft.gsdPath}
             onValueChange={update("gsdPath")}
           />

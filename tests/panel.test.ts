@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { mcpLoadState, panelBadges, panelNeeds } from "../client/panel";
 import type { Description } from "../client/queries";
 
+function gsdPath(overrides: Partial<NonNullable<Description["gsdPath"]>> = {}): NonNullable<Description["gsdPath"]> {
+  return {
+    enabled: true,
+    global: true,
+    repoChoice: null,
+    members: [],
+    sessions: "listed",
+    sessionsFolder: "/home/me/.local/state/paseo-sbx/claude/paseo-app-1/projects",
+    configPath: "/home/me/.gsd-path/daemon.json",
+    ...overrides,
+  };
+}
+
 function description(overrides: Partial<Description> = {}): Description {
   return {
     key: "directory:/home/me/app",
@@ -103,12 +116,26 @@ describe("panelNeeds", () => {
     const needs = panelNeeds(
       description({
         mounts: [{ path: "/home/me/web", readOnly: false, source: "member", exists: false, applied: null }],
-        gsdPath: { enabled: true, members: [{ name: "web", path: "/home/me/web", available: false }] },
+        gsdPath: gsdPath({ members: [{ name: "web", path: "/home/me/web", available: false }] }),
       }),
     );
     expect(needs).toEqual([
       { tone: "warning", title: "GSD Path member without a checkout", detail: "web (~/web)", tab: "mounts" },
     ]);
+  });
+
+  it("asks to fix an unreadable GSD Path config while the integration is on", () => {
+    const unreadable = gsdPath({ sessions: "invalid-config" });
+    expect(panelNeeds(description({ gsdPath: unreadable }))).toEqual([
+      {
+        tone: "warning",
+        title: "GSD Path's config is unreadable",
+        detail:
+          "~/.gsd-path/daemon.json is not a JSON object, so its usage leaves out this sandbox's sessions. Fix the file; the plugin lists them at the next session.",
+        tab: "mounts",
+      },
+    ]);
+    expect(panelNeeds(description({ gsdPath: { ...unreadable, enabled: false } }))).toEqual([]);
   });
 });
 

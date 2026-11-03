@@ -28,6 +28,8 @@ const repoConfigSchema = z.object({
   autoPublish: z.array(z.number().int().min(1).max(65535)).default([]),
   /** MCP servers this repo's sandboxes load (true) or skip (false), over `mcpGlobal`. */
   mcp: z.record(z.string(), z.boolean()).optional(),
+  /** GSD Path integration for this repo, over the global `gsdPath`; unset follows it. */
+  gsdPath: z.boolean().optional(),
 });
 export type RepoConfig = z.infer<typeof repoConfigSchema>;
 
@@ -87,7 +89,9 @@ export const sandboxSettingsSchema = z.object({
   excludedPaths: z.array(z.string()).default([]),
   /**
    * For repositories that use GSD Path: mount `~/.gsd-path` (its runtime and worktrees) and the
-   * member checkouts listed in `.project/MEMBERS.md`, writable.
+   * member checkouts listed in `.project/MEMBERS.md`, writable, and list the sandboxes' session
+   * folders in GSD Path's `daemon.json`, so its usage counts what agents do in sandboxes. A repo's
+   * own `gsdPath` wins.
    */
   gsdPath: z.boolean().default(true),
   /**
@@ -111,3 +115,8 @@ export const sandboxSettings = defineSettings({
   version: SETTINGS_VERSION,
   schema: sandboxSettingsSchema,
 });
+
+/** Whether a repo's sandboxes get the GSD Path integration: its own choice, else the global one. */
+export function gsdPathEnabled(settings: Pick<SandboxSettings, "gsdPath" | "repos">, repoKey: string): boolean {
+  return settings.repos[repoKey]?.gsdPath ?? settings.gsdPath;
+}

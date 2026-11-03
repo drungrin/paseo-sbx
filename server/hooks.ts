@@ -9,6 +9,7 @@ import { daemonPort } from "./daemon";
 import type { PluginPaths } from "./paths";
 import { ensureProvider } from "./provider";
 import { storedSecrets } from "./sbx";
+import { rememberGsdSessionSource } from "./gsd-sessions";
 import { buildSpec, copyHostTranscripts } from "./spec-builder";
 import { backfillWorkspaceRecords, recordWorkspace, rememberWorkspaceSandbox } from "./workspaces";
 
@@ -16,6 +17,8 @@ export interface ServerDeps {
   paths: PluginPaths;
   /** Throws when the stored settings are invalid and no valid settings were read before. */
   readSettings(): Promise<SandboxSettings>;
+  /** Lists the sandboxes' session folders in GSD Path's config; one update at a time, never throws. */
+  updateGsdSessions(): Promise<void>;
 }
 
 export function registerHooks(server: PluginServerContext, deps: ServerDeps): void {
@@ -55,6 +58,9 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
     });
     // The workspace's sandbox for the Sandbox terminal, kept current by every session.
     rememberWorkspaceSandbox(deps.paths, request.workspaceId, spec);
+    // A new sandbox's session folder reaches GSD Path before its first turn.
+    const source = { claudeConfigDir: spec.claudeConfigDir, repoKey: spec.repoKey, workspace: spec.workspace };
+    if (rememberGsdSessionSource(deps.paths, source)) await deps.updateGsdSessions();
     if (!binding) {
       writeBinding(deps.paths, request.agentId, {
         key: spec.key,

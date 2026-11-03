@@ -177,9 +177,17 @@ export const describeSandboxRpc = defineRpc({
     /** Null when the workspace does not use GSD Path. */
     gsdPath: z
       .object({
-        /** The plugin setting that mounts `~/.gsd-path` and the members. */
+        /** The integration for this repo: its own choice, else the plugin setting. */
         enabled: z.boolean(),
+        /** The plugin setting, which a repo without its own choice follows. */
+        global: z.boolean(),
+        /** The repo's own choice; null follows the plugin setting. */
+        repoChoice: z.boolean().nullable(),
         members: z.array(z.object({ name: z.string(), path: z.string(), available: z.boolean() })),
+        /** Whether GSD Path's config lists this sandbox's session folder. */
+        sessions: z.enum(["listed", "not-listed", "no-config", "invalid-config"]),
+        sessionsFolder: z.string(),
+        configPath: z.string(),
       })
       .nullable(),
     env: z.array(

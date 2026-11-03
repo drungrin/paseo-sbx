@@ -19,6 +19,7 @@ let paths: PluginPaths;
 let repo: string;
 let handlers: Record<string, Handler>;
 let events: Record<string, EventHandler>;
+let gsdUpdates: number;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "paseo-sbx-hooks-"));
@@ -32,6 +33,7 @@ beforeEach(() => {
   handlers = {};
   events = {};
   resetWorkspaceBackfillForTests();
+  gsdUpdates = 0;
   const server = {
     before: (name: string, handler: Handler) => {
       handlers[name] = handler;
@@ -42,7 +44,10 @@ beforeEach(() => {
       return () => {};
     },
   } as unknown as PluginServerContext;
-  registerHooks(server, { paths, readSettings: async () => sandboxSettingsSchema.parse({}) });
+  registerHooks(server, { paths, readSettings: async () => sandboxSettingsSchema.parse({}), updateGsdSessions: async () => {
+      gsdUpdates += 1;
+    },
+  });
 });
 
 afterEach(() => {
@@ -83,6 +88,12 @@ describe("agent.session_open", () => {
     const record = JSON.parse(readFileSync(join(paths.workspacesDir, "wks_1.json"), "utf8"));
     expect(record.name).toBe("paseo-repo-0badc0de");
     expect(record.env).toEqual({});
+  });
+
+  it("lists a new sandbox's session folder for GSD Path once, at its first session", async () => {
+    await sessionOpen({});
+    await sessionOpen({});
+    expect(gsdUpdates).toBe(1);
   });
 
   it("reads history without a spec, a new binding or a config dir", async () => {
