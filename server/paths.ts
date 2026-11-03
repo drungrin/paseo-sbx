@@ -14,6 +14,7 @@ import {
   launcherSource,
   shellLauncherSource,
 } from "./wrapper-source";
+import { STARSHIP_CONFIG_SOURCE } from "./starship";
 
 export interface PluginPaths {
   root: string;
@@ -91,6 +92,7 @@ function binFiles(paths: PluginPaths) {
     { name: "home-mounts.sh", source: HOME_MOUNTS_SOURCE, mode: 0o644 },
     { name: "seed-claude-settings.py", source: SEED_SETTINGS_SOURCE, mode: 0o644 },
     { name: "paseo-sbx-shellrc", source: SHELL_RC_SOURCE, mode: 0o644 },
+    { name: "starship.toml", source: STARSHIP_CONFIG_SOURCE, mode: 0o644 },
   ];
 }
 

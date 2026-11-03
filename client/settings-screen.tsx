@@ -13,8 +13,9 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import { AGENTS, AGENT_IDS, type AgentId } from "../shared/agents";
 import { sandboxSettings, type IsolationMode, type SandboxSettings } from "../shared/settings";
+import { STARSHIP_DOWNLOAD_MB, STARSHIP_VERSION } from "../shared/starship";
 import { invalidEnvNames, invalidMounts, parseList, parsePortList } from "../shared/spec";
-import { useTemplates } from "./queries";
+import { useStarshipStatus, useTemplates } from "./queries";
 
 interface Draft {
   enabledAgents: AgentId[];
@@ -27,6 +28,7 @@ interface Draft {
   cpus: string;
   dockerDiskGiB: string;
   githubHttps: boolean;
+  starship: boolean;
   psiPercent: string;
   availablePercent: string;
   template: string;
@@ -37,6 +39,16 @@ interface Draft {
   networkAllow: string;
   forwardPorts: string;
   excludedPaths: string;
+}
+
+function starshipHint(status: { version: string | null; installing: boolean } | undefined): string {
+  const about =
+    `The Sandbox terminal's prompt, from Starship ${STARSHIP_VERSION}. Turning it on downloads it from GitHub ` +
+    `(about ${STARSHIP_DOWNLOAD_MB} MB), checked against its pinned SHA-256, into the plugin's folder every sandbox ` +
+    "mounts; it runs only in the VMs. Your ~/.config/starship.toml is used when you have one, otherwise a setup " +
+    "without Nerd Font icons.";
+  if (status?.installing) return `${about} Downloading…`;
+  return status?.version ? `${about} Installed: Starship ${status.version}.` : about;
 }
 
 function toDraft(values: SandboxSettings): Draft {
@@ -51,6 +63,7 @@ function toDraft(values: SandboxSettings): Draft {
     cpus: String(values.cpus),
     dockerDiskGiB: String(values.dockerDiskGiB),
     githubHttps: values.githubHttps,
+    starship: values.starship,
     psiPercent: String(values.memoryAlert.psiPercent),
     availablePercent: String(values.memoryAlert.availablePercent),
     template: values.template,
@@ -94,6 +107,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     cpus,
     dockerDiskGiB,
     githubHttps: draft.githubHttps,
+    starship: draft.starship,
     memoryAlert: { psiPercent, availablePercent },
     template: draft.template,
     mounts: parseList(draft.mounts),
@@ -129,6 +143,7 @@ type ReadySettings = Extract<ReturnType<typeof useSettings<typeof sandboxSetting
 function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: PluginSurfaceProps["theme"] }) {
   const [draft, setDraft] = useState(() => toDraft(settings.values));
   const templates = useTemplates();
+  const starship = useStarshipStatus(draft.starship);
   const templateOptions = [
     { label: "sbx image", value: "" },
     ...(templates.data?.templates ?? [])
@@ -309,6 +324,18 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             hint="git in the sandbox reaches GitHub SSH remotes over HTTPS, where the sbx proxy signs in with the secret from sbx secret set github. Sandboxes have no SSH keys."
             value={draft.githubHttps}
             onValueChange={update("githubHttps")}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Terminal">
+        <SettingsCard>
+          <SettingsSwitch
+            label="Starship prompt"
+            hint={starshipHint(starship.data)}
+            error={draft.starship ? (starship.data?.error ?? null) : null}
+            value={draft.starship}
+            onValueChange={update("starship")}
           />
         </SettingsCard>
       </SettingsSection>

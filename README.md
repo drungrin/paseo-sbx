@@ -81,7 +81,8 @@ Then:
 | `loopback-forward.py` | Sandbox | Relays guest `127.0.0.1:<port>` to the host's loopback |
 | `guest-agent.py` | Sandbox | Runs the relays of published ports and reports the guest's listening ports |
 | `seed-claude-settings.py` | Sandbox | Starts a sandbox's own Claude settings from the kit's, once |
-| `paseo-sbx-shellrc` | Sandbox | The Sandbox terminal's bash startup: a login shell's, plus `claude` with sbx's MCP gateway |
+| `paseo-sbx-shellrc` | Sandbox | The Sandbox terminal's bash startup: a login shell's, the prompt, and `claude` with sbx's MCP gateway |
+| `starship`, `starship.toml`, `starship-user.toml` | Sandbox | With **Starship prompt** on: the pinned Starship build, the plugin's config, and the copy of yours the terminal takes at each start |
 
 The server bundle cannot read files from the plugin directory, so the plugin writes the launcher, the wrapper and the guest helpers to `~/.local/state/paseo-sbx/bin` on startup and registers the provider with `config.patch`, keeping any label, env or model fields you customized on that entry.
 
@@ -132,6 +133,7 @@ Automatically: variables starting with `ANTHROPIC_`, `CLAUDE_`, `PASEO_`, `MCP_`
 ## Working inside a sandbox
 
 - **Sandbox terminal** in the workspace's **+** menu, or **Open sandbox terminal** in the command center, opens a shell in the VM, in the workspace, with the sessions' Claude config and login.
+- The terminal's Starship starts from its bash startup file only, never from `/etc/sandbox-persistent.sh`: sbx runs that file for every non-interactive shell too (`BASH_ENV`), so agents' commands would pay for a prompt they never show. A Starship already started by `/etc/profile.d` or a template is left as it is.
 - `PASEO_SBX_SANDBOX` is set to the sandbox name, so scripts can detect they run in a sandbox.
 - `PASEO_SBX_OUT` is `<workspace>/.sandbox-out`, where agents leave files you open from the chat. Claude's user memory (`CLAUDE.md` in the sandbox's config dir, after yours) and Codex's `AGENTS.md` (a marked block in its shared home) say so; `/.sandbox-out/` goes into the repository's `.git/info/exclude` once.
 - k3d needs two flags inside the VM, which has no `/dev/kmsg`:

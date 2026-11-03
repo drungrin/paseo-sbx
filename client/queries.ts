@@ -21,6 +21,7 @@ import {
   saveTemplateRpc,
   refResultSchema,
   startMcpSignInRpc,
+  starshipStatusRpc,
   statusRpc,
   type OperationView,
   type SignInView,
@@ -52,6 +53,19 @@ export function useSandboxDescription(workspaceId: string, directory: string | n
 export function useMemory() {
   const get = useRpc(memoryRpc);
   return useQuery({ queryKey: ["memory"], queryFn: () => get({}), refetchInterval: 10_000 });
+}
+
+/** Polled while a turned-on Starship is still downloading, until it is in place or failed. */
+export function useStarshipStatus(watching: boolean) {
+  const get = useRpc(starshipStatusRpc);
+  return useQuery({
+    queryKey: ["starship"],
+    queryFn: () => get({}),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return watching && (!data || data.installing || (!data.version && !data.error)) ? 2000 : false;
+    },
+  });
 }
 
 export function useTemplates() {

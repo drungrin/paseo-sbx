@@ -8,6 +8,7 @@ import { applyMcpChoices } from "./server/mcp";
 import { cancelAllSignIns } from "./server/mcp-signin";
 import { installBinFiles, pluginPaths } from "./server/paths";
 import { migrateSettings } from "./server/settings-migration";
+import { syncStarship } from "./server/starship";
 import { reconcileRecreatingMarkers } from "./server/state";
 
 export default function contribute(server: PluginServerContext) {
@@ -65,9 +66,11 @@ export default function contribute(server: PluginServerContext) {
     mcpKey ??= mcpChoicesKey(state.values);
     gsdKey ??= gsdSessionsKey(state.values);
     void updateGsdSessions(state.values);
+    void syncStarship(paths, state.values.starship);
   });
   const unsubscribe = settings.subscribe((state) => {
     if (state.status !== "ready") return;
+    void syncStarship(paths, state.values.starship);
     const gsd = gsdSessionsKey(state.values);
     if (gsd !== gsdKey) {
       gsdKey = gsd;

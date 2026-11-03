@@ -545,6 +545,32 @@ describe("wrapper hardening", () => {
     expect(readFileSync(join(config, "settings.json"), "utf8")).toBe('{"enabledPlugins":{"x@y":true}}');
   });
 
+  it("starts Starship in the Sandbox terminal, the template's first, and keeps prompts it did not set", () => {
+    const rc = join(root, "shellrc");
+    writeFileSync(rc, SHELL_RC_SOURCE);
+    const fakeStarship = (dir: string) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "starship"), '#!/bin/sh\n[ "$1 $2" = "init bash" ] && echo "PS1=from-$0"\n', { mode: 0o755 });
+    };
+    const plugin = join(root, "plugin-bin");
+    const template = join(root, "template-bin");
+    fakeStarship(plugin);
+    fakeStarship(template);
+    const prompt = (env: Record<string, string>) =>
+      execFileSync(
+        "bash",
+        ["--norc", "--noprofile", "-c", `eval "$(sed -n '/^paseo_sbx_prompt()/,/^}/p' ${rc})"; PS1=$PS1_IN; paseo_sbx_prompt; printf '%s|%s' "$PS1" "$STARSHIP_CONFIG"`],
+        { env: { PATH: "/usr/bin:/bin", PASEO_SBX_BIN: plugin, PASEO_SBX_STARSHIP_CONFIG: "/cfg.toml", ...env }, encoding: "utf8" },
+      );
+    const debian = "${debian_chroot:+($debian_chroot)}\\u@\\h:\\w\\$ ";
+    expect(prompt({ PS1_IN: debian })).toBe(`from-${plugin}/starship|/cfg.toml`);
+    expect(prompt({ PS1_IN: debian, PATH: `${template}:/usr/bin:/bin` })).toBe(`from-${template}/starship|/cfg.toml`);
+    expect(prompt({ PS1_IN: "mine> ", STARSHIP_SHELL: "bash" })).toBe("mine> |");
+    // Without Starship: Debian's one-line default gives way to a short prompt; others stay.
+    expect(prompt({ PS1_IN: debian, PASEO_SBX_BIN: join(root, "none") })).toBe("\\[\\e[1;36m\\]\\W\\[\\e[0m\\]\\n\\[\\e[1;32m\\]❯\\[\\e[0m\\] |");
+    expect(prompt({ PS1_IN: "mine> ", PASEO_SBX_BIN: join(root, "none") })).toBe("mine> |");
+  });
+
   it("gives claude started in the Sandbox terminal sbx's MCP gateway, except for its subcommands", () => {
     const bin = join(root, "fake-bin");
     mkdirSync(bin, { recursive: true });
@@ -1008,7 +1034,7 @@ describe("Sandbox terminal", () => {
     const sandbox = spec({ env: {}, mcpServers: [], hostClaudeSettings: hostSettings });
     mkdirSync(join(root, "state", "workspaces"), { recursive: true });
     writeFileSync(join(root, "state", "workspaces", "wks_1.json"), JSON.stringify(sandbox));
-    const input = 'echo "in the guest: $PWD"; echo "config: $CLAUDE_CONFIG_DIR"; echo "codex: $CODEX_HOME"; echo "base: $ANTHROPIC_BASE_URL"; echo "out: $PASEO_SBX_OUT"\n';
+    const input = 'echo "in the guest: $PWD"; echo "config: $CLAUDE_CONFIG_DIR"; echo "codex: $CODEX_HOME"; echo "base: $ANTHROPIC_BASE_URL"; echo "out: $PASEO_SBX_OUT"; echo "starship: $PASEO_SBX_STARSHIP_CONFIG"\n';
     const result = run(["--paseo-sbx-shell"], { env: { PASEO_WORKSPACE_ID: "wks_1" }, input });
     expect(result.status).toBe(0);
     expect(result.stdout.startsWith(TITLE)).toBe(true);
@@ -1017,6 +1043,14 @@ describe("Sandbox terminal", () => {
     expect(result.stdout).toContain(`codex: ${join(sandbox.homesDir, "codex")}`);
     expect(result.stdout).toContain("base: http://gateway.test:1");
     expect(result.stdout).toContain(`out: ${join(workspace, ".sandbox-out")}`);
+    expect(result.stdout).toContain(`starship: ${join(sandbox.binDir, "starship.toml")}`);
+
+    // Your Starship config reaches the VM as a copy in the plugin's folder.
+    mkdirSync(join(home, ".config"), { recursive: true });
+    writeFileSync(join(home, ".config", "starship.toml"), "add_newline = false\n");
+    const mine = run(["--paseo-sbx-shell"], { env: { PASEO_WORKSPACE_ID: "wks_1" }, input });
+    expect(mine.stdout).toContain(`starship: ${join(sandbox.binDir, "starship-user.toml")}`);
+    expect(readFileSync(join(sandbox.binDir, "starship-user.toml"), "utf8")).toBe("add_newline = false\n");
     expect(result.calls.map((call) => call.args[0])).toContain("create");
     const shell = result.calls.at(-1)?.args ?? [];
     expect(shell.slice(0, 5)).toEqual(["exec", "-it", "-w", workspace, "--env-file"]);

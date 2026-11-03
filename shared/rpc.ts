@@ -87,6 +87,18 @@ export const statusRpc = defineRpc({
   }),
 });
 
+/** The plugin's Starship for the Sandbox terminal: the version in its folder, a download under way or failed. */
+export const starshipStatusRpc = defineRpc({
+  name: "starship.status",
+  input: z.object({}),
+  output: z.object({
+    enabled: z.boolean(),
+    version: z.string().nullable(),
+    installing: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
 /** Registers the agent's provider and creates its catalog sandbox; `update` recreates it from a fresh kit. */
 export const configureAgentRpc = defineRpc({
   name: "agent.configure",

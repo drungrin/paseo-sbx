@@ -83,6 +83,11 @@ export const sandboxSettingsSchema = z.object({
    * `github` secret (`sbx secret set github`). A guest has no SSH keys.
    */
   githubHttps: z.boolean().default(true),
+  /**
+   * Starship as the Sandbox terminal's prompt. Turning it on downloads the pinned release from
+   * GitHub into the plugin's folder (`server/starship.ts`); off removes it.
+   */
+  starship: z.boolean().default(false),
   networkAllow: z.array(z.string()).default(["**"]),
   /** Host loopback ports relayed into every sandbox, beyond the ones detected per launch. */
   forwardPorts: z.array(z.number().int().min(1).max(65535)).default([]),

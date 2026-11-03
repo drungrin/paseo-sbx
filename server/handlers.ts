@@ -21,6 +21,7 @@ import {
   removeTemplateRpc,
   sandboxActionRpc,
   sandboxTerminalRpc,
+  starshipStatusRpc,
   saveTemplateRpc,
   startMcpSignInRpc,
   statusRpc,
@@ -55,6 +56,7 @@ import {
 import { readSandboxState, type SandboxState } from "./state";
 import { ensureTerminalProfile } from "./terminal-profile";
 import { backfillWorkspaceRecords, rememberWorkspaceSandbox } from "./workspaces";
+import { starshipStatus } from "./starship";
 import {
   ensureTemplatePrep,
   findTemplate,
@@ -117,6 +119,8 @@ function warnTerminalProfile(error: unknown): void {
 
 export function registerHandlers(server: PluginServerContext, deps: ServerDeps): void {
   const { paths } = deps;
+
+  server.handle(starshipStatusRpc, async () => starshipStatus(paths, (await deps.readSettings()).starship));
 
   server.handle(statusRpc, async (_input, { paseo }) => {
     void backfillWorkspaceRecords(paths, deps.readSettings, paseo);

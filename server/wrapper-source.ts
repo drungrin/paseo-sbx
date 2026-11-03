@@ -941,7 +941,40 @@ function shellEnv(spec) {
   const env = guestEnv(Object.assign({}, spec, { agent: 'claude', agentHome: null }));
   delete env.PASEO_SBX_MCP_GATEWAY;
   env.CODEX_HOME = path.join(spec.homesDir, 'codex');
+  env.PASEO_SBX_BIN = spec.binDir;
+  env.PASEO_SBX_STARSHIP_CONFIG = starshipConfig(spec);
   return env;
+}
+
+// The Starship config the terminal's prompt uses: yours, copied into the plugin's folder the VMs
+// mount (a mount of the file itself would not follow a save that renames a new file over it), or
+// the plugin's own without one.
+function starshipConfig(spec) {
+  const own = process.env.STARSHIP_CONFIG ||
+    path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'starship.toml');
+  const copy = path.join(spec.binDir, 'starship-user.toml');
+  let data = null;
+  try {
+    data = fs.readFileSync(own);
+  } catch (error) {
+    data = null;
+  }
+  if (data === null) {
+    fs.rmSync(copy, { force: true });
+    return path.join(spec.binDir, 'starship.toml');
+  }
+  let current = null;
+  try {
+    current = fs.readFileSync(copy);
+  } catch (error) {
+    current = null;
+  }
+  if (!current || !current.equals(data)) {
+    const temp = copy + '.' + process.pid + '.tmp';
+    fs.writeFileSync(temp, data, { mode: 0o644 });
+    fs.renameSync(temp, copy);
+  }
+  return copy;
 }
 
 function main() {
@@ -1033,13 +1066,32 @@ export function shellLauncherSource(nodeBinary: string, wrapperPath: string): st
   ].join("\n");
 }
 
-// The Sandbox terminal's bash: a login shell's startup, then claude with sbx's MCP gateway,
-// as sessions get it from guest-supervisor.py. Commands that open no session are left alone.
+// The Sandbox terminal's bash: a login shell's startup, a prompt, then claude with sbx's MCP
+// gateway, as sessions get it from guest-supervisor.py. Commands that open no session are left
+// alone. The prompt is Starship when the template has it or the plugin's setting put it in the
+// plugin's folder, unless a startup file already started one; without Starship, Debian's default
+// prompt (the sandbox's long name and the full path on one line) gives way to a short one. Any
+// other prompt the template sets stays.
 export const SHELL_RC_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
 [ -f /etc/profile ] && . /etc/profile
 for profile in ~/.bash_profile ~/.bash_login ~/.profile; do
   if [ -f "$profile" ]; then . "$profile"; break; fi
 done
+paseo_sbx_prompt() {
+  [ -n "$STARSHIP_SHELL" ] && return
+  local starship
+  starship=$(command -v starship 2>/dev/null)
+  if [ -z "$starship" ] && [ -x "$PASEO_SBX_BIN/starship" ]; then starship=$PASEO_SBX_BIN/starship; fi
+  if [ -n "$starship" ]; then
+    if [ -n "$PASEO_SBX_STARSHIP_CONFIG" ]; then export STARSHIP_CONFIG=$PASEO_SBX_STARSHIP_CONFIG; fi
+    eval "$("$starship" init bash)"
+    return
+  fi
+  case "$PS1" in
+    *'\u@\h:\w\$ ') PS1='\[\e[1;36m\]\W\[\e[0m\]\n\[\e[1;32m\]❯\[\e[0m\] ' ;;
+  esac
+}
+paseo_sbx_prompt
 claude() {
   case "$1" in
     agents|attach|auth|auto-mode|config|doctor|gateway|import|install|logs|mcp|migrate-installer|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade)
