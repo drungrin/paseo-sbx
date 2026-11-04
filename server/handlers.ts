@@ -7,6 +7,7 @@ import {
   cancelMcpSignInRpc,
   configureAgentRpc,
   describeSandboxRpc,
+  diskRpc,
   finishMcpSignInRpc,
   finishTemplateRpc,
   getMcpSignInRpc,
@@ -37,6 +38,7 @@ import { disableUnusedProviders, ensureProvider, providerStatus } from "./provid
 import { activeAgentsBySandbox } from "./agents";
 import { addMcpServer, listMcpServers, readLoadedMcp, removeMcpServer } from "./mcp";
 import { cancelSignIn, finishSignIn, getSignIn, startSignIn } from "./mcp-signin";
+import { diskAlerts, hostDisk, sandboxDisks, sharedImageBytes } from "./disk";
 import { hostMemory, memoryAlerts, vmMemoryMiB } from "./memory";
 import { gsdDaemonConfigPath, gsdSessionsStatus } from "./gsd-sessions";
 import { getOperation, operationsFor, runOperation } from "./operations";
@@ -320,6 +322,21 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
         activeAgents: agents.get(sandbox.name) ?? [],
       })),
       alerts: host ? memoryAlerts(host, settings.memoryAlert) : [],
+    };
+  });
+
+  server.handle(diskRpc, async () => {
+    const settings = await deps.readSettings();
+    const sandboxes = sandboxDisks(paths, (await listSandboxes(paths)).map((sandbox) => sandbox.name)).sort(
+      (a, b) => b.usedBytes - a.usedBytes,
+    );
+    const host = hostDisk(paths);
+    return {
+      host,
+      sandboxesBytes: sandboxes.reduce((sum, sandbox) => sum + sandbox.usedBytes, 0),
+      imagesBytes: sharedImageBytes(paths),
+      sandboxes,
+      alerts: host ? diskAlerts(host, settings.diskAlert) : [],
     };
   });
 

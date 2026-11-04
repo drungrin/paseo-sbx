@@ -53,19 +53,25 @@ export function memoryAlerts(host: HostMemory, alert: SandboxSettings["memoryAle
   return reasons;
 }
 
+/** A VM shim of the Paseo instance, with the sandbox it runs. */
+export interface VmShim {
+  pid: string;
+  hostname: string;
+}
+
 /**
- * Resident memory of each running VM in the Paseo instance, in MiB, read without entering the VM.
- * sbx 0.49 runs a VM as a `containerd-shim-nerdbox-v1` process whose working directory is the
- * task's state directory, and that directory's `config.json` names the sandbox in `hostname`.
- * An internal detail of sbx: anything unexpected leaves the sandbox out, shown as unknown.
+ * The running VMs of the Paseo instance, read without entering them. sbx 0.49 runs a VM as a
+ * `containerd-shim-nerdbox-v1` process whose working directory is the task's state directory, and
+ * that directory's `config.json` names the sandbox in `hostname`. An internal detail of sbx:
+ * anything unexpected leaves the sandbox out, shown as unknown.
  */
-export function vmMemoryMiB(paths: PluginPaths, procRoot = "/proc"): Map<string, number> {
-  const result = new Map<string, number>();
+export function vmShims(paths: PluginPaths, procRoot = "/proc"): VmShim[] {
+  const shims: VmShim[] = [];
   let pids: string[] = [];
   try {
     pids = readdirSync(procRoot).filter((entry) => /^\d+$/.test(entry));
   } catch {
-    return result;
+    return shims;
   }
   for (const pid of pids) {
     const cmdline = readText(join(procRoot, pid, "cmdline"));
@@ -78,14 +84,23 @@ export function vmMemoryMiB(paths: PluginPaths, procRoot = "/proc"): Map<string,
     }
     // The main sbx instance's VMs run the same shim; count only this plugin's instance.
     if (!isWithin(cwd, paths.stateHome)) continue;
-    const rssKiB = Number(/^VmRSS:\s+(\d+)/m.exec(readText(join(procRoot, pid, "status")) ?? "")?.[1] ?? Number.NaN);
     let hostname: unknown;
     try {
       hostname = (JSON.parse(readFileSync(join(cwd, "config.json"), "utf8")) as { hostname?: unknown }).hostname;
     } catch {
       continue;
     }
-    if (typeof hostname !== "string" || !Number.isFinite(rssKiB)) continue;
+    if (typeof hostname === "string") shims.push({ pid, hostname });
+  }
+  return shims;
+}
+
+/** Resident memory of each running VM in the Paseo instance, in MiB. */
+export function vmMemoryMiB(paths: PluginPaths, procRoot = "/proc"): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const { pid, hostname } of vmShims(paths, procRoot)) {
+    const rssKiB = Number(/^VmRSS:\s+(\d+)/m.exec(readText(join(procRoot, pid, "status")) ?? "")?.[1] ?? Number.NaN);
+    if (!Number.isFinite(rssKiB)) continue;
     result.set(hostname, Math.max(result.get(hostname) ?? 0, Math.round(rssKiB / 1024)));
   }
   return result;

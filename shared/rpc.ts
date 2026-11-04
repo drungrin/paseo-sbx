@@ -303,6 +303,35 @@ export const memoryRpc = defineRpc({
   }),
 });
 
+const fileUseSchema = z.object({ usedBytes: z.number(), sizeBytes: z.number() });
+
+export const diskRpc = defineRpc({
+  name: "disk.get",
+  input: z.object({}),
+  output: z.object({
+    /** The filesystem holding the sandboxes; null when unreadable. */
+    host: z.object({ path: z.string(), totalBytes: z.number(), availableBytes: z.number() }).nullable(),
+    /** Sum of the sandboxes' `usedBytes`. */
+    sandboxesBytes: z.number(),
+    /** Image layers and templates, shared between sandboxes. */
+    imagesBytes: z.number(),
+    /**
+     * Space each sandbox's files take on the host, biggest first; one with none found is left out.
+     * The images are sparse: `usedBytes` is what the host spends, `sizeBytes` the disk the VM sees.
+     */
+    sandboxes: z.array(
+      z.object({
+        name: z.string(),
+        usedBytes: z.number(),
+        docker: fileUseSchema.nullable(),
+        rootfs: fileUseSchema.nullable(),
+        agentBytes: z.number(),
+      }),
+    ),
+    alerts: z.array(z.string()),
+  }),
+});
+
 /** `name` is the sandbox; `title` names the terminal tab. */
 const shellSchema = z.object({ name: z.string(), title: z.string(), command: z.string(), args: z.array(z.string()) });
 

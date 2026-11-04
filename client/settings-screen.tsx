@@ -31,6 +31,7 @@ interface Draft {
   starship: boolean;
   psiPercent: string;
   availablePercent: string;
+  diskAvailablePercent: string;
   template: string;
   mounts: string;
   claudeShared: string;
@@ -66,6 +67,7 @@ function toDraft(values: SandboxSettings): Draft {
     starship: values.starship,
     psiPercent: String(values.memoryAlert.psiPercent),
     availablePercent: String(values.memoryAlert.availablePercent),
+    diskAvailablePercent: String(values.diskAlert.availablePercent),
     template: values.template,
     // The host's input is single-line: lists are comma-separated.
     mounts: values.mounts.join(", "),
@@ -91,6 +93,8 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   const availablePercent = Number(draft.availablePercent);
   if (!(psiPercent >= 1 && psiPercent <= 100)) return "The pressure threshold must be between 1 and 100.";
   if (!(availablePercent >= 1 && availablePercent <= 90)) return "The available RAM threshold must be between 1 and 90.";
+  const diskAvailablePercent = Number(draft.diskAvailablePercent);
+  if (!(diskAvailablePercent >= 1 && diskAvailablePercent <= 90)) return "The free disk threshold must be between 1 and 90.";
   const badMounts = invalidMounts(parseList(draft.mounts));
   if (badMounts.length > 0) return `Mounts must be absolute or ~/ paths: ${badMounts.join(", ")}`;
   const badNames = invalidEnvNames(parseList(draft.envNames));
@@ -109,6 +113,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     githubHttps: draft.githubHttps,
     starship: draft.starship,
     memoryAlert: { psiPercent, availablePercent },
+    diskAlert: { availablePercent: diskAvailablePercent },
     template: draft.template,
     mounts: parseList(draft.mounts),
     claudeShared: parseList(draft.claudeShared),
@@ -251,7 +256,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Memory alerts">
+      <SettingsSection title="Memory and disk alerts">
         <SettingsCard>
           <SettingsInput
             label="Alert at memory pressure (%)"
@@ -264,6 +269,12 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             hint="Share of the host's RAM still available."
             initialValue={draft.availablePercent}
             onChangeText={update("availablePercent")}
+          />
+          <SettingsInput
+            label="Alert below free disk (%)"
+            hint="Share of the disk holding the sandboxes that is still free."
+            initialValue={draft.diskAvailablePercent}
+            onChangeText={update("diskAvailablePercent")}
           />
         </SettingsCard>
       </SettingsSection>

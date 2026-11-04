@@ -30,8 +30,8 @@ A panel beside each workspace, opened from its **+** menu, in tabs. Each tab's b
 
 Opened from the sidebar, for every sandbox at once.
 
-- **Overview**: the memory the VMs hold against the host's, with available RAM, swap and memory pressure, and an alert past the thresholds you set. Then what needs you and the agents that keep each VM running, biggest first, with **Archive**.
-- **Sandboxes**: every VM the plugin created, grouped into workspaces, template preparations and agent catalogs, with **Stop** and **Remove**.
+- **Overview**: the memory the VMs hold against the host's, with available RAM, swap and memory pressure, and an alert past the thresholds you set. Then what needs you and the agents that keep each VM running, biggest first, with **Archive**. Last, the host's disk: what the sandboxes, the shared images and templates and everything else take, the free space with an alert below the threshold you set, and each sandbox's Docker disk, filesystem and agent state.
+- **Sandboxes**: every VM the plugin created, grouped into workspaces, template preparations and agent catalogs, with the memory and disk each one takes, **Stop** and **Remove**.
 - **Agents**: Claude and Codex, each with its CLI version, catalog sandbox, provider and login, the command that stores its login, and **Configure** or **Update**.
 - **Templates**: the saved templates, their size, the repositories and sandboxes that use them, and **Remove** for the ones nothing uses.
 - **MCP servers**: the remote MCP servers agents reach through sbx's gateway, each with its sign-in status, an **On for all sandboxes** switch and how many sandboxes have it loaded. **Add a server** takes its address and an OAuth sign-in or an API key; **Sign in** shows the provider's page and takes back the address the browser ends on, for a browser on another device.

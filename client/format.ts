@@ -54,6 +54,13 @@ export function formatMiB(mib: number): string {
   return mib >= 1024 ? `${(mib / 1024).toFixed(mib % 1024 === 0 ? 0 : 1)} GiB` : `${Math.round(mib)} MiB`;
 }
 
+/** A size on disk in binary units, the way `df -h` shows it. */
+export function formatSize(bytes: number): string {
+  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TiB`;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+  return `${Math.round(bytes / 1024 ** 2)} MiB`;
+}
+
 /** sbx's memory flag (`8192m`, `6g`) in MiB; null when unreadable. */
 export function parseMemoryFlag(value: string | null): number | null {
   const match = /^(\d+(?:\.\d+)?)([mg])$/i.exec(value ?? "");

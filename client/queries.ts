@@ -7,6 +7,7 @@ import {
   addMcpServerRpc,
   cancelMcpSignInRpc,
   describeSandboxRpc,
+  diskRpc,
   configureAgentRpc,
   finishMcpSignInRpc,
   getMcpSignInRpc,
@@ -48,6 +49,12 @@ export function useSandboxDescription(workspaceId: string, directory: string | n
     enabled: directory !== null,
     refetchInterval: 10_000,
   });
+}
+
+/** Disk figures change slowly and cost a walk of the image store: polled less often than memory. */
+export function useDisk() {
+  const get = useRpc(diskRpc);
+  return useQuery({ queryKey: ["disk"], queryFn: () => get({}), refetchInterval: 30_000 });
 }
 
 export function useMemory() {

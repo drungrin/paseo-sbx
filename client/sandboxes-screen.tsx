@@ -11,11 +11,14 @@ import {
   errorMessage,
   formatBytes,
   formatMiB,
+  formatSize,
+  homeOf,
   parseMemoryFlag,
   plural,
   repoPath,
   sandboxStatus,
   shortRef,
+  tildify,
 } from "./format";
 import { Column, Columns, Empty, Figures, Frame, Needs, StatusChip, Tabbed, type Need, type Tab } from "./frame";
 import {
@@ -46,6 +49,7 @@ import { McpServersTab } from "./mcp";
 import {
   useArchiveAgent,
   useConfigureAgent,
+  useDisk,
   useInvalidateAll,
   useMcpServers,
   useMemory,
@@ -63,6 +67,8 @@ interface SandboxesScreenProps extends PluginScreenProps {
 type ScreenTab = "overview" | "sandboxes" | "agents" | "templates" | "mcp";
 type Status = NonNullable<ReturnType<typeof useStatus>["data"]>;
 type Memory = NonNullable<ReturnType<typeof useMemory>["data"]>;
+type Disk = NonNullable<ReturnType<typeof useDisk>["data"]>;
+type SandboxDisk = Disk["sandboxes"][number];
 type McpServers = NonNullable<ReturnType<typeof useMcpServers>["data"]>;
 
 /** Ready to run sessions: provider registered and current, catalog sandbox created and answering. */
@@ -79,6 +85,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
   const status = useStatus();
   const sandboxes = useSandboxes();
   const memory = useMemory();
+  const disk = useDisk();
   const templates = useTemplates();
   const mcp = useMcpServers();
   const settings = useSettings(sandboxSettings);
@@ -86,7 +93,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
   const [width, setWidth] = useState<number | null>(null);
   const compact = layout.compact || (width !== null && width < 760);
 
-  const fetching = status.isFetching || sandboxes.isFetching || memory.isFetching;
+  const fetching = status.isFetching || sandboxes.isFetching || memory.isFetching || disk.isFetching;
   const header = {
     status: <SbxChip status={status.data} error={status.error} theme={theme} />,
     actions: (
@@ -97,7 +104,14 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
           label={fetching ? "Refreshing" : "Refresh"}
           busy={fetching}
           onPress={() =>
-            void Promise.all([status.refetch(), sandboxes.refetch(), memory.refetch(), templates.refetch(), mcp.refetch()])
+            void Promise.all([
+              status.refetch(),
+              sandboxes.refetch(),
+              memory.refetch(),
+              disk.refetch(),
+              templates.refetch(),
+              mcp.refetch(),
+            ])
           }
         />
         <Button theme={theme} small label="Settings" onPress={openSettings} />
@@ -108,7 +122,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
   const custom = (templates.data?.templates ?? []).filter((template) => !template.base);
   const agentsNeedingSetup = status.data?.agents.filter((agent) => agent.enabled && !agentReady(agent)).length ?? 0;
   const legacy = settings.status === "ready" ? Object.keys(settings.values.legacyOverrides).length : 0;
-  const needs = screenNeeds(status.data, memory.data, mcp.data, legacy, setTab);
+  const needs = screenNeeds(status.data, memory.data, disk.data, mcp.data, legacy, setTab);
   const mcpWaiting = mcp.data?.servers.filter((server) => server.status !== "ready").length ?? 0;
   const tabs: Tab<ScreenTab>[] = [
     {
@@ -168,6 +182,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
                 notes={[
                   "VM memory is each VM's resident memory: an estimate, where pages shared between VMs count once per VM.",
                   "Memory pressure is the host's PSI over the last minute: the share of time tasks waited on memory. The alert thresholds are in the plugin settings.",
+                  "Disk is what the sandboxes' files take on this host. A VM's disks are files that grow as it writes: one can keep space the VM has since freed, until the sandbox is removed or recreated.",
                   "A VM stops on its own once no agent or shell holds it. Idle agents hold it until you archive them.",
                 ]}
               >
@@ -191,13 +206,18 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
                     needs={needs}
                     calm={{
                       title: "Nothing needs you",
-                      detail: "The host has memory to spare and every enabled agent is set up.",
+                      detail: "The host has memory and disk to spare, and every enabled agent is set up.",
                     }}
                   />
                 </FadeIn>
                 {memory.data ? (
                   <FadeIn delay={140}>
                     <Holders memory={memory.data} theme={theme} compact={compact} />
+                  </FadeIn>
+                ) : null}
+                {disk.data ? (
+                  <FadeIn delay={200}>
+                    <DiskSection disk={disk.data} theme={theme} compact={compact} />
                   </FadeIn>
                 ) : null}
                 {legacy > 0 ? <LegacyOverrides theme={theme} /> : null}
@@ -215,12 +235,14 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
                 notes={[
                   "Stop shuts a VM down; the next agent or shell starts it again. Remove deletes it with everything inside: the workspace files and transcripts stay on the host.",
                   "Agent catalogs answer Paseo's version and model queries for each sandbox provider. Removing one makes it come back at the next query.",
+                  "Disk is what a sandbox's files take on this host: its Docker disk, its filesystem's changes and its agents' state. A stopped sandbox's filesystem counts once it has run since the plugin started measuring it. The Overview breaks it down.",
                 ]}
               >
                 <SandboxList
                   sandboxes={sandboxes.data?.sandboxes ?? null}
                   error={sandboxes.error}
                   memory={memory.data}
+                  disk={disk.data}
                   theme={theme}
                   compact={compact}
                 />
@@ -287,6 +309,7 @@ function SbxChip({ status, error, theme }: { status: Status | undefined; error: 
 function screenNeeds(
   status: Status | undefined,
   memory: Memory | undefined,
+  disk: Disk | undefined,
   mcp: McpServers | undefined,
   legacy: number,
   go: (tab: ScreenTab) => void,
@@ -301,6 +324,14 @@ function screenNeeds(
     });
   for (const alert of memory?.alerts ?? []) {
     needs.push({ tone: "danger", title: `Memory alert: ${alert}`, detail: "Archive idle agents below to let their VMs stop." });
+  }
+  for (const alert of disk?.alerts ?? []) {
+    needs.push({
+      tone: "danger",
+      title: `Disk alert: ${alert}`,
+      detail: `Sandboxes take ${formatSize(disk?.sandboxesBytes ?? 0)} of it, listed below. Removing or recreating a sandbox gives its space back.`,
+      action: { label: "Sandboxes", onPress: () => go("sandboxes") },
+    });
   }
   for (const agent of status?.agents ?? []) {
     if (!agent.enabled) continue;
@@ -570,12 +601,14 @@ function SandboxList({
   sandboxes,
   error,
   memory,
+  disk,
   theme,
   compact,
 }: {
   sandboxes: SandboxSummary[] | null;
   error: unknown;
   memory: Memory | undefined;
+  disk: Disk | undefined;
   theme: Theme;
   compact: boolean;
 }) {
@@ -596,6 +629,7 @@ function SandboxList({
     );
   }
   const rss = new Map(memory?.sandboxes.map((sandbox) => [sandbox.name, sandbox.rssMiB]) ?? []);
+  const disks = new Map(disk?.sandboxes.map((sandbox) => [sandbox.name, sandbox]) ?? []);
   return (
     <>
       {KIND_GROUPS.map((group) => {
@@ -609,6 +643,7 @@ function SandboxList({
                   key={sandbox.name}
                   sandbox={sandbox}
                   rssMiB={rss.get(sandbox.name) ?? null}
+                  disk={disks.get(sandbox.name) ?? null}
                   first={index === 0}
                   theme={theme}
                   compact={compact}
@@ -625,12 +660,14 @@ function SandboxList({
 function SandboxRow({
   sandbox,
   rssMiB,
+  disk,
   first,
   theme,
   compact,
 }: {
   sandbox: SandboxSummary;
   rssMiB: number | null;
+  disk: SandboxDisk | null;
   first: boolean;
   theme: Theme;
   compact: boolean;
@@ -647,6 +684,7 @@ function SandboxRow({
       : limit !== null
         ? `${formatMiB(limit)} limit`
         : null,
+    diskFact(disk),
   ].filter(Boolean);
   return (
     <View
@@ -700,6 +738,99 @@ function SandboxRow({
         </Note>
       ) : null}
     </View>
+  );
+}
+
+/** What a sandbox takes on disk; only its Docker disk when its filesystem was not seen yet. */
+function diskFact(disk: SandboxDisk | null): string | null {
+  if (!disk) return null;
+  if (disk.rootfs === null && disk.docker !== null) return `Docker disk ${formatSize(disk.docker.usedBytes)}`;
+  return `${formatSize(disk.usedBytes)} on disk`;
+}
+
+/** "Docker disk 97.0 of 100.0 GiB · filesystem 13.0 of 20.0 GiB · agents 4 MiB" */
+function diskParts(disk: SandboxDisk): string {
+  return [
+    disk.docker ? `Docker disk ${formatSize(disk.docker.usedBytes)} of ${formatSize(disk.docker.sizeBytes)}` : null,
+    disk.rootfs
+      ? `filesystem ${formatSize(disk.rootfs.usedBytes)} of ${formatSize(disk.rootfs.sizeBytes)}`
+      : "filesystem not seen running yet",
+    disk.agentBytes > 0 ? `agents ${formatSize(disk.agentBytes)}` : null,
+  ]
+    .filter(Boolean)
+    .join("  ·  ");
+}
+
+/** The host disk the sandboxes live on, and what each one takes of it, biggest first. */
+function DiskSection({ disk, theme, compact }: { disk: Disk; theme: Theme; compact: boolean }) {
+  const host = disk.host;
+  const alert = disk.alerts.length > 0;
+  const accent = toneColor(theme, alert ? "danger" : "accent");
+  const images = tint(theme, accent, 0.45);
+  const muted = tint(theme, theme.colors.foregroundMuted, 0.55);
+  const free = tint(theme, theme.colors.foregroundMuted, 0.2);
+  const otherUsed = host ? Math.max(0, host.totalBytes - host.availableBytes - disk.sandboxesBytes - disk.imagesBytes) : 0;
+  const max = Math.max(1, ...disk.sandboxes.map((sandbox) => sandbox.usedBytes));
+  return (
+    <Section
+      theme={theme}
+      tone={alert ? "danger" : undefined}
+      overline={host ? `Host disk  ·  ${tildify(host.path, homeOf(host.path))}` : "Host disk"}
+      title={
+        host
+          ? `${formatSize(host.availableBytes)} free of ${formatSize(host.totalBytes)}`
+          : `${formatSize(disk.sandboxesBytes)} in sandboxes`
+      }
+    >
+      {host ? (
+        <View style={{ gap: 10 }}>
+          <SegmentBar
+            theme={theme}
+            height={10}
+            label={`Sandboxes ${formatSize(disk.sandboxesBytes)}, images and templates ${formatSize(disk.imagesBytes)}, other use ${formatSize(otherUsed)}, free ${formatSize(host.availableBytes)}`}
+            segments={[
+              { value: disk.sandboxesBytes, color: accent, label: "Sandboxes" },
+              { value: disk.imagesBytes, color: images, label: "Images and templates" },
+              { value: otherUsed, color: muted, label: "Other" },
+              { value: host.availableBytes, color: free, label: "Free" },
+            ]}
+          />
+          <Legend
+            theme={theme}
+            items={[
+              { color: accent, label: `${formatSize(disk.sandboxesBytes)} sandboxes` },
+              { color: images, label: `${formatSize(disk.imagesBytes)} images and templates` },
+              { color: muted, label: `${formatSize(otherUsed)} everything else` },
+              { color: free, label: `${formatSize(host.availableBytes)} free` },
+            ]}
+          />
+        </View>
+      ) : null}
+      {disk.sandboxes.length === 0 ? (
+        <Note theme={theme}>No sandbox takes space yet.</Note>
+      ) : (
+        <View role="list">
+          {disk.sandboxes.map((sandbox, index) => (
+            <View
+              key={sandbox.name}
+              role="listitem"
+              style={{ gap: 6, paddingVertical: 10, borderTopWidth: index === 0 ? 0 : 1, borderColor: theme.colors.border }}
+            >
+              <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                <Text numberOfLines={1} selectable style={{ ...mono(theme, 13), flex: 1 }}>
+                  {sandbox.name}
+                </Text>
+                <Text style={{ ...text(theme, 13, "600"), ...figures }}>{formatSize(sandbox.usedBytes)}</Text>
+              </View>
+              <Meter theme={theme} value={sandbox.usedBytes} max={max} color={accent} />
+              <Text numberOfLines={compact ? 2 : 1} style={{ ...text(theme, 12, "400", true), ...figures }}>
+                {diskParts(sandbox)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
+    </Section>
   );
 }
 

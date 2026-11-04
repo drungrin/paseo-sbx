@@ -49,6 +49,11 @@ const memoryAlertSchema = z.object({
   availablePercent: z.number().min(1).max(90).default(15),
 });
 
+const diskAlertSchema = z.object({
+  /** Alert when the disk holding the sandboxes has less than this percentage free. */
+  availablePercent: z.number().min(1).max(90).default(10),
+});
+
 export const sandboxSettingsSchema = z.object({
   /** Agents whose sandboxed provider the plugin registers; a turned-off one is kept, disabled. */
   enabledAgents: z.array(z.enum(AGENT_IDS)).default(["claude"]),
@@ -108,6 +113,7 @@ export const sandboxSettingsSchema = z.object({
   /** Keyed by the version 1 sandbox key; shown in the Docker Sandboxes screen until resolved. */
   legacyOverrides: z.record(z.string(), legacyOverrideSchema).default({}),
   memoryAlert: memoryAlertSchema.default({ psiPercent: 10, availablePercent: 15 }),
+  diskAlert: diskAlertSchema.default({ availablePercent: 10 }),
 });
 export type SandboxSettings = z.infer<typeof sandboxSettingsSchema>;
 
