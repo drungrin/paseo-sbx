@@ -183,7 +183,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
                   "VM memory is each VM's resident memory: an estimate, where pages shared between VMs count once per VM.",
                   "Memory pressure is the host's PSI over the last minute: the share of time tasks waited on memory. The alert thresholds are in the plugin settings.",
                   "Disk is what the sandboxes' files take on this host. A VM's disks are files that grow as it writes: one can keep space the VM has since freed, until the sandbox is removed or recreated.",
-                  "A VM stops on its own once no agent or shell holds it. Idle agents hold it until you archive them.",
+                  "A VM stops on its own once no agent or shell holds it. Idle agents hold it until you archive them, or for the hours set in the plugin settings, even after Paseo closes their idle runtimes.",
                 ]}
               >
                 {status.error ? (

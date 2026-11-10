@@ -152,7 +152,7 @@ function OverviewTab(props: PanelTabProps & { openAgent?: (input: { agentId: str
       notes={[
         "One sandbox serves every agent of this workspace's directory. Agents created with a sandbox provider run in it; other agents stay on the host.",
         "Template, mounts, memory and CPUs are fixed when a sandbox is created: Recreate applies a change, and keeps transcripts and the workspace files.",
-        "The VM stops on its own once no agent or shell holds it. Idle agents hold it until you archive them.",
+        "The VM stops on its own once no agent or shell holds it. Idle agents hold it until you archive them, or for the hours set in the plugin settings, even after Paseo closes their idle runtimes.",
       ]}
     >
       <FadeIn>

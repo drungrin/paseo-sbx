@@ -3,6 +3,7 @@ import { mcpChoicesKey } from "./shared/mcp";
 import { sandboxSettings, type SandboxSettings } from "./shared/settings";
 import { gsdSessionsKey, reconcileGsdSessionDirs } from "./server/gsd-sessions";
 import { registerHandlers } from "./server/handlers";
+import { registerHolds } from "./server/holds";
 import { registerHooks } from "./server/hooks";
 import { applyMcpChoices } from "./server/mcp";
 import { cancelAllSignIns } from "./server/mcp-signin";
@@ -55,6 +56,7 @@ export default function contribute(server: PluginServerContext) {
   const deps = { paths, readSettings, updateGsdSessions: () => updateGsdSessions() };
   registerHooks(server, deps);
   registerHandlers(server, deps);
+  const releaseHolds = registerHolds(server, deps);
 
   // A changed MCP choice reaches the existing sandboxes at once, one change after another. The
   // choices at startup are only recorded: launches bring each sandbox to them (the wrapper).
@@ -85,6 +87,7 @@ export default function contribute(server: PluginServerContext) {
   });
   return () => {
     unsubscribe();
+    releaseHolds();
     cancelAllSignIns();
   };
 }

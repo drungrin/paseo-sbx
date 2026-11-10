@@ -72,6 +72,11 @@ export const sandboxSettingsSchema = z.object({
   cpus: z.number().int().min(0).default(0),
   /** Size of each sandbox's `/var/lib/docker` volume, sparse on the host; 0 uses sbx's (10 GB). */
   dockerDiskGiB: z.number().int().min(0).default(0),
+  /**
+   * Hours a VM stays running after the last turn of its agents while they are not archived,
+   * even once Paseo closes their idle runtimes (`server/holds.ts`); 0 keeps it until they are.
+   */
+  idleHoldHours: z.number().min(0).default(0),
   /** Default sbx template for new sandboxes; empty uses sbx's image for Claude. */
   template: z.string().default(""),
   /** Extra mounts for every sandbox: absolute or `~/` paths, `:ro` for read-only. */

@@ -1249,7 +1249,8 @@ else:
  * Runs Claude Code in the sandbox and owns its teardown. Claude gets its own process group and
  * a stdin pipe fed from ours. When our stdin reaches EOF (the session ended, or the host side
  * went away by any means), Claude gets PASEO_SBX_STOP_GRACE seconds to end its session, then
- * its process tree is terminated. Every exit path ends with the cleanup, on the main thread.
+ * its process tree is terminated; processes detached from it while Claude ran are left running.
+ * Every exit path ends with the cleanup, on the main thread.
  */
 export const SUPERVISOR_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
 import json, os, signal, subprocess, sys, threading, time
@@ -1284,9 +1285,9 @@ try:
 except FileNotFoundError:
     sys.stderr.write("[paseo-sbx] %s is not in this sandbox: its template lacks it. Add it to the template, or pick one built for it\n" % sys.argv[1])
     sys.exit(127)
-# pid -> start time of every process seen under Claude. Tools may run in their own process
-# groups and are reparented once Claude exits, so they are tracked while Claude still owns them;
-# the start time guards against killing a reused pid.
+# pid -> start time of every process under Claude. Tools may run in their own process groups
+# and are reparented once Claude exits, so they are tracked while Claude still owns them; the
+# start time guards against killing a reused pid. A process detached while Claude runs leaves it.
 known = {}
 known_lock = threading.Lock()
 eof = threading.Event()
@@ -1308,15 +1309,25 @@ def scan():
     return children, starts
 
 
-def remember_tree():
+def remember_tree(prune=False):
     children, starts = scan()
+    tree = set()
     pending = [child.pid]
+    while pending:
+        for kid in children.get(pending.pop(), []):
+            if kid in starts:
+                tree.add(kid)
+            pending.append(kid)
+    # What left the tree while Claude still runs was detached on purpose (setsid, nohup &): it
+    # outlives the session, as on the host, where Paseo's tree kill does not reach it either.
+    # Only once Claude is seen alive after the scan: its exit reparents everything it leaves.
+    prune = prune and child.poll() is None
     with known_lock:
-        while pending:
-            for kid in children.get(pending.pop(), []):
-                if kid in starts:
-                    known[kid] = starts[kid]
-                pending.append(kid)
+        if prune:
+            for pid in [pid for pid in known if pid not in tree]:
+                del known[pid]
+        for kid in tree:
+            known[kid] = starts[kid]
 
 
 def signal_known(sig):
@@ -1333,7 +1344,7 @@ def signal_known(sig):
 
 def track():
     while child.poll() is None:
-        remember_tree()
+        remember_tree(prune=True)
         time.sleep(1)
 
 

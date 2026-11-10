@@ -27,6 +27,7 @@ interface Draft {
   memoryFloorGiB: string;
   cpus: string;
   dockerDiskGiB: string;
+  idleHoldHours: string;
   githubHttps: boolean;
   starship: boolean;
   psiPercent: string;
@@ -63,6 +64,7 @@ function toDraft(values: SandboxSettings): Draft {
     memoryFloorGiB: String(values.memoryFloorGiB),
     cpus: String(values.cpus),
     dockerDiskGiB: String(values.dockerDiskGiB),
+    idleHoldHours: String(values.idleHoldHours),
     githubHttps: values.githubHttps,
     starship: values.starship,
     psiPercent: String(values.memoryAlert.psiPercent),
@@ -89,6 +91,8 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
   if (!(Number.isInteger(cpus) && cpus >= 0)) return "CPUs must be a whole number (0 = all).";
   const dockerDiskGiB = Number(draft.dockerDiskGiB);
   if (!(Number.isInteger(dockerDiskGiB) && dockerDiskGiB >= 0)) return "Docker disk must be a whole number of GiB (0 = sbx's).";
+  const idleHoldHours = Number(draft.idleHoldHours);
+  if (!(draft.idleHoldHours.trim() !== "" && idleHoldHours >= 0)) return "Idle agents' VMs: hours must be 0 or more (0 = until archived).";
   const psiPercent = Number(draft.psiPercent);
   const availablePercent = Number(draft.availablePercent);
   if (!(psiPercent >= 1 && psiPercent <= 100)) return "The pressure threshold must be between 1 and 100.";
@@ -110,6 +114,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     memoryFloorGiB,
     cpus,
     dockerDiskGiB,
+    idleHoldHours,
     githubHttps: draft.githubHttps,
     starship: draft.starship,
     memoryAlert: { psiPercent, availablePercent },
@@ -252,6 +257,12 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             hint="The VM's /var/lib/docker: images, containers and their data. 0 uses sbx's 10 GB. The host only spends what a sandbox fills."
             initialValue={draft.dockerDiskGiB}
             onChangeText={update("dockerDiskGiB")}
+          />
+          <SettingsInput
+            label="Keep idle agents' VMs running (hours, 0 = until archived)"
+            hint="Paseo closes an idle agent's runtime after an hour, which would stop its VM and what runs there. The plugin keeps the VM running while the agent is not archived, for at most this long after its last turn."
+            initialValue={draft.idleHoldHours}
+            onChangeText={update("idleHoldHours")}
           />
         </SettingsCard>
       </SettingsSection>

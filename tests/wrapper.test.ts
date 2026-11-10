@@ -23,6 +23,11 @@ if (process.env.CLAUDE_FAKE_COOPERATIVE) {
   // Ends its session on stdin EOF but leaves a detached tool that ignores SIGTERM.
   require('node:child_process').spawn('sh', ['-c', 'trap "" TERM; sleep 300'], { stdio: 'ignore', detached: true });
   fs.readFileSync(0);
+} else if (process.env.CLAUDE_FAKE_DETACHES) {
+  // Like a tool that starts "cmd &" and returns: the job is Claude's for 2 s, then reparented.
+  // Its pid goes to CLAUDE_FAKE_DETACHES; the session ends on stdin EOF.
+  require('node:child_process').spawn('sh', ['-c', 'sleep 300 & echo $! > "$0"; sleep 2; : > "$0.done"', process.env.CLAUDE_FAKE_DETACHES], { stdio: 'ignore', detached: true });
+  fs.readFileSync(0);
 } else if (process.env.CLAUDE_FAKE_BUSY) {
   require('node:child_process').spawn('sleep', ['300'], { stdio: 'ignore', detached: true });
   setInterval(() => {}, 1000);
@@ -488,6 +493,23 @@ describe("wrapper hardening", () => {
     await exited(session);
     await waitFor(() => tools.every((pid) => !alive(pid)));
   });
+
+  it("leaves a job detached from Claude's tree running when the session ends", async () => {
+    const pidFile = join(root, "detached.pid");
+    const session = startSession({ CLAUDE_FAKE_BUSY: "", CLAUDE_FAKE_DETACHES: pidFile });
+    const job = await waitFor(() => existsSync(pidFile) && Number(readFileSync(pidFile, "utf8").trim()));
+    try {
+      // Seen in Claude's tree first, then detached while Claude runs.
+      await waitFor(() => existsSync(`${pidFile}.done`));
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      session.stdin?.end();
+      await exited(session);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(alive(job)).toBe(true);
+    } finally {
+      if (alive(job)) process.kill(job, "SIGKILL");
+    }
+  }, 15_000);
 
   it("passes forwarded values literally and keeps multi-line ones out of the env file", () => {
     const sandbox = spec({ env: { SPECIAL: `a=b "c" #d  'e'`, PEM: "line1\nline2" } });
