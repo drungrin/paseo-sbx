@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import { sandboxSettings } from "../shared/settings";
 import { errorMessage } from "./format";
+import { saveSettings } from "./queries";
 import { Actions, Button, Section, text, type Theme } from "./kit";
 
 /**
@@ -22,7 +23,7 @@ export function useDownloadConsent() {
     setSaving(true);
     setError(null);
     try {
-      await settings.save({ ...settings.values, allowImageDownloads: allow }, settings.revision);
+      await saveSettings(settings, { ...settings.values, allowImageDownloads: allow });
       return true;
     } catch (caught) {
       setError(errorMessage(caught));

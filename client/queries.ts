@@ -27,7 +27,7 @@ import {
   type OperationView,
   type SignInView,
 } from "../shared/rpc";
-import { sandboxSettings, type RepoConfig } from "../shared/settings";
+import { applyRepoPatch, sandboxSettings, type RepoConfig, type SandboxSettings } from "../shared/settings";
 
 export function useStatus() {
   const getStatus = useRpc(statusRpc);
@@ -159,15 +159,30 @@ export function useRemoveTemplate() {
 
 const EMPTY_REPO: RepoConfig = { template: "", mounts: [], envNames: [], autoPublish: [] };
 
+/**
+ * Saves the whole settings document against the revision the screen read, and throws when the
+ * store refuses it. `settings.save` never throws: it returns false and sets `saveError`, which a
+ * caller's `catch` would never see.
+ */
+export async function saveSettings(
+  settings: { revision: string; save(values: SandboxSettings, revision: string): Promise<boolean> },
+  values: SandboxSettings,
+): Promise<void> {
+  if (!(await settings.save(values, settings.revision))) {
+    throw new Error("The settings were not saved: they changed elsewhere or are invalid. Reload and try again.");
+  }
+}
+
 /** Saves a change to one repo's settings, against the revision the screen read. */
 export function useRepoSettings(repoKey: string | null) {
   const settings = useSettings(sandboxSettings);
   const invalidate = useInvalidateAll();
   const repo = settings.status === "ready" && repoKey ? (settings.values.repos[repoKey] ?? EMPTY_REPO) : null;
+  /** A key set to undefined clears the repo's value, so it follows the global one. */
   async function save(patch: Partial<RepoConfig>) {
     if (settings.status !== "ready" || !repoKey) throw new Error("settings are not loaded");
-    const repos = { ...settings.values.repos, [repoKey]: { ...(settings.values.repos[repoKey] ?? EMPTY_REPO), ...patch } };
-    await settings.save({ ...settings.values, repos }, settings.revision);
+    const repos = { ...settings.values.repos, [repoKey]: applyRepoPatch(settings.values.repos[repoKey] ?? EMPTY_REPO, patch) };
+    await saveSettings(settings, { ...settings.values, repos });
     invalidate();
   }
   return { settings, repo, save };
@@ -203,7 +218,7 @@ export function useMcpChoices() {
   async function setGlobal(name: string, on: boolean) {
     if (settings.status !== "ready") throw new Error("settings are not loaded");
     const others = settings.values.mcpGlobal.filter((entry) => entry !== name);
-    await settings.save({ ...settings.values, mcpGlobal: on ? [...others, name].sort() : others }, settings.revision);
+    await saveSettings(settings, { ...settings.values, mcpGlobal: on ? [...others, name].sort() : others });
     refresh();
   }
   async function setRepo(repoKey: string, name: string, on: boolean | null) {
@@ -213,7 +228,7 @@ export function useMcpChoices() {
     if (on === null) delete mcp[name];
     else mcp[name] = on;
     const repos = { ...settings.values.repos, [repoKey]: { ...repo, mcp } };
-    await settings.save({ ...settings.values, repos }, settings.revision);
+    await saveSettings(settings, { ...settings.values, repos });
     refresh();
   }
   /** Drops every choice naming a removed server. */
@@ -228,7 +243,7 @@ export function useMcpChoices() {
       }),
     );
     const mcpGlobal = settings.values.mcpGlobal.filter((entry) => entry !== name);
-    await settings.save({ ...settings.values, mcpGlobal, repos }, settings.revision);
+    await saveSettings(settings, { ...settings.values, mcpGlobal, repos });
     refresh();
   }
   return { settings, setGlobal, setRepo, forget };

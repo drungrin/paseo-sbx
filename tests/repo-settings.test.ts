@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_CLAUDE_SHARED, sandboxSettingsSchema } from "../shared/settings";
+import { z } from "zod";
+import { DEFAULT_CLAUDE_SHARED, applyRepoPatch, sandboxSettingsSchema } from "../shared/settings";
 import { pluginPaths } from "../server/paths";
 import { repoIdentity } from "../server/repo";
 import { migrateSettings } from "../server/settings-migration";
@@ -79,6 +80,31 @@ describe("repoIdentity", () => {
     const plain = join(root, "plain");
     mkdirSync(plain);
     expect(await repoIdentity(`${plain}/`)).toEqual({ key: `dir:${plain}`, root: plain });
+  });
+});
+
+describe("applyRepoPatch", () => {
+  const base = { template: "", memoryGiB: 4, cpus: 2, mounts: [], envNames: [], autoPublish: [] };
+
+  /** What Paseo's settings store checks on every write: the schema, then that it is plain JSON. */
+  async function storeAccepts(repo: unknown) {
+    const parsed = await sandboxSettingsSchema.parseAsync({ repos: { r: repo } });
+    return z.json().safeParse(parsed).success;
+  }
+
+  it("saves memory with the CPUs left empty, which the store refused while undefined was kept", async () => {
+    const naive = { ...base, ...{ memoryGiB: 8, cpus: undefined } };
+    expect(await storeAccepts(naive)).toBe(false);
+    const next = applyRepoPatch(base, { memoryGiB: 8, cpus: undefined });
+    expect(next).toEqual({ template: "", memoryGiB: 8, mounts: [], envNames: [], autoPublish: [] });
+    expect("cpus" in next).toBe(false);
+    expect(await storeAccepts(next)).toBe(true);
+  });
+
+  it("clears both values, and the GSD Path choice, back to the global ones", async () => {
+    const next = applyRepoPatch({ ...base, gsdPath: true }, { memoryGiB: undefined, cpus: undefined, gsdPath: undefined });
+    expect(next).toEqual({ template: "", mounts: [], envNames: [], autoPublish: [] });
+    expect(await storeAccepts(next)).toBe(true);
   });
 });
 

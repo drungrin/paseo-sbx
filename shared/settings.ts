@@ -132,6 +132,20 @@ export const sandboxSettings = defineSettings({
   schema: sandboxSettingsSchema,
 });
 
+/**
+ * A repo's settings with `patch` applied, where a key set to undefined goes back to the global
+ * value. The key is dropped rather than kept as undefined: Paseo's settings store rejects a
+ * document that holds undefined, which would fail the whole save.
+ */
+export function applyRepoPatch(repo: RepoConfig, patch: Partial<RepoConfig>): RepoConfig {
+  const next: Record<string, unknown> = { ...repo };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next as RepoConfig;
+}
+
 /** Whether a repo's sandboxes get the GSD Path integration: its own choice, else the global one. */
 export function gsdPathEnabled(settings: Pick<SandboxSettings, "gsdPath" | "repos">, repoKey: string): boolean {
   return settings.repos[repoKey]?.gsdPath ?? settings.gsdPath;
