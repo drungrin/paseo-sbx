@@ -104,7 +104,7 @@ export const sandboxSettingsSchema = z.object({
   excludedPaths: z.array(z.string()).default([]),
   /**
    * For repositories that use GSD Path: mount `~/.gsd-path` (its runtime and worktrees) and the
-   * member checkouts listed in `.project/MEMBERS.md`, writable, and list the sandboxes' session
+   * member checkouts listed in `.project/MEMBERS.md` with their local remotes, writable, and list the sandboxes' session
    * folders in GSD Path's `daemon.json`, so its usage counts what agents do in sandboxes. A repo's
    * own `gsdPath` wins.
    */

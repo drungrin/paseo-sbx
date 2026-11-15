@@ -221,6 +221,7 @@ const MOUNT_SOURCE_LABELS: Record<MountSource, string> = {
   "gsd-path": "GSD Path",
   member: "GSD Path member",
   git: "Git metadata",
+  remote: "Local git remote",
   claude: "Shared Claude config",
   agents: "Agents' shared homes",
 };

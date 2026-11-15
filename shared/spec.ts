@@ -189,7 +189,7 @@ export interface MountEntry {
 }
 
 /** Why a sandbox mounts a path; the workspace panel shows it. */
-export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "claude", "agents"] as const;
+export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "remote", "claude", "agents"] as const;
 export type MountSource = (typeof MOUNT_SOURCES)[number];
 
 /** Parses `path` or `path:ro`, expanding a leading `~/`. Returns null for relative paths. */

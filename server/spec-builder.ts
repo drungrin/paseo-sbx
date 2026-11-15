@@ -37,7 +37,7 @@ import {
   type SandboxBinding,
   type SandboxSpec,
 } from "../shared/spec";
-import { canonical, git } from "./git";
+import { canonical, git, localRemotePaths } from "./git";
 import { gsdPathMembers, usesGsdPath, type GsdPathMember } from "./gsd-path";
 import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
@@ -429,6 +429,13 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   };
   add(settings.mounts, "settings");
   add(repo?.mounts ?? [], "repo");
+  // A remote reached by a local path (a bare `origin` beside the checkout) must be in the guest at
+  // the same path for fetch and push; writable, since pushing writes to it.
+  const addLocalRemotes = async (root: string) => {
+    for (const path of await localRemotePaths(root)) {
+      if (!isWithin(path, root)) requested.push({ path, readOnly: false, source: "remote" });
+    }
+  };
   // A coordinator's agents work in its member checkouts and in worktrees under ~/.gsd-path, where
   // the GSD Path runtime lives too. It also appears in the guest's home, where the runtime looks.
   const gsdPath = usesGsdPath(directory) ? { enabled: gsdPathEnabled(settings, repoKey), members: gsdPathMembers(directory, home) } : null;
@@ -440,8 +447,10 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
       if (memberCommonDir && !isWithin(memberCommonDir, member.path)) {
         requested.push({ path: memberCommonDir, readOnly: false, source: "git" });
       }
+      if (existsSync(member.path)) await addLocalRemotes(member.path);
     }
   }
+  await addLocalRemotes(directory);
   const commonDir = await gitCommonDir(input.cwd);
   if (commonDir && !isWithin(commonDir, directory)) requested.push({ path: commonDir, readOnly: false, source: "git" });
   // Each shared Claude folder on its own, never the whole config dir with its credentials. The

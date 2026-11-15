@@ -373,6 +373,46 @@ describe("buildSpec for GSD Path", () => {
     expect(builtOn.spec.mounts).toContain(join(home, ".gsd-path"));
   });
 
+  it("mounts the local remotes of the coordinator and its members writable, not network ones", async () => {
+    const { home, repo, env, paths } = setup();
+    const { member } = coordinator(home, repo);
+    const orchestrators = join(root, "orchestrators");
+    const coordinatorOrigin = join(orchestrators, "repo.git");
+    const memberMirror = join(root, "mirrors", "member.git");
+    git(root, "init", "-q", "--bare", coordinatorOrigin);
+    git(root, "init", "-q", "--bare", memberMirror);
+    git(repo, "remote", "add", "origin", coordinatorOrigin);
+    git(repo, "remote", "add", "github", "git@github.com:org/repo.git");
+    git(repo, "remote", "add", "gone", join(root, "gone.git"));
+    git(repo, "config", "remote.github.pushurl", "https://github.com/org/repo.git");
+    git(member, "remote", "add", "origin", "git@github.com:org/member.git");
+    git(member, "remote", "add", "mirror", `file://${memberMirror}`);
+    // A bare inside a mounted checkout needs no mount of its own.
+    git(repo, "init", "-q", "--bare", join(repo, "inner.git"));
+    git(repo, "remote", "add", "inner", "./inner.git");
+
+    const settings = sandboxSettingsSchema.parse({ claudeShared: [] });
+    const built = await buildSpec({ settings, workspaceId: null, cwd: repo, paths, env, home });
+    const remotes = built.mounts.filter((mount) => mount.source === "remote");
+    expect(remotes).toEqual([
+      { path: memberMirror, readOnly: false, source: "remote" },
+      { path: coordinatorOrigin, readOnly: false, source: "remote" },
+    ]);
+    expect(built.spec.homeMounts.map((mount) => mount.target)).not.toContain(coordinatorOrigin);
+  });
+
+  it("mounts a local remote of the workspace with GSD Path off or absent", async () => {
+    const { home, repo, env, paths } = setup();
+    const origin = join(root, "origin.git");
+    git(root, "init", "-q", "--bare", origin);
+    git(repo, "remote", "add", "origin", "../origin.git");
+    const settings = sandboxSettingsSchema.parse({ claudeShared: [] });
+    const built = await buildSpec({ settings, workspaceId: null, cwd: join(repo, "src"), paths, env, home });
+    expect(built.gsdPath).toBeNull();
+    expect(built.spec.mounts).toEqual([origin, paths.homesDir]);
+    expect(built.mounts[0]?.source).toBe("remote");
+  });
+
   it("reports no GSD Path for a repository without a .gsd-path dir", async () => {
     const { home, repo, env, paths } = setup();
     const built = await buildSpec({ settings: sandboxSettingsSchema.parse({}), workspaceId: null, cwd: repo, paths, env, home });
