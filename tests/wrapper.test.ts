@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { GUEST_KUBECONFIG } from "../shared/kube";
 import { SPEC_ENV, type SandboxSpec } from "../shared/spec";
 import {
   SEED_SETTINGS_SOURCE,
@@ -717,6 +718,24 @@ describe("wrapper and the plugin's sandbox operations", () => {
     const helpers = result.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh");
     expect(helpers?.args.slice(-2)).toEqual([".gsd-path", target]);
     expect(helpers?.args[4]).toContain('sh "$dir/home-mounts.sh" "$@"');
+  });
+
+  it("lists the plugin's kubeconfig after the sandbox's own, which the guest helpers create", () => {
+    const kubeconfig = join(root, "state", "claude", "paseo-workspace-0000abcd", ".paseo-sbx", "kubeconfig.json");
+    const result = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec({ kubeconfig })) } });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).env.KUBECONFIG).toBe(`${GUEST_KUBECONFIG}:${kubeconfig}`);
+    const helpers = result.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh");
+    expect(helpers?.args[9]).toBe(GUEST_KUBECONFIG);
+    expect(helpers?.args[4]).toContain('if [ -n "$kube" ] && [ ! -e "$kube" ]');
+
+    const none = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec()) } });
+    expect(JSON.parse(none.stdout).env.KUBECONFIG).toBeUndefined();
+    expect(none.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh")?.args[9]).toBe("");
+
+    // A KUBECONFIG you forward yourself stays.
+    const own = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec({ kubeconfig, env: { KUBECONFIG: "/mine" } })) } });
+    expect(JSON.parse(own.stdout).env.KUBECONFIG).toBe("/mine");
   });
 
   it("creates the sandbox with the kit that built its template", () => {

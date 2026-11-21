@@ -19,6 +19,7 @@ import {
 import { homedir, totalmem } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { AGENTS, type AgentId } from "../shared/agents";
+import { KUBE_FILE, kubeSelected } from "../shared/kube";
 import { mcpAutoLoad } from "../shared/mcp";
 import { LEGACY_CLAUDE_SHARED, gsdPathEnabled, type SandboxSettings } from "../shared/settings";
 import {
@@ -39,6 +40,7 @@ import {
 } from "../shared/spec";
 import { canonical, git, localRemotePaths } from "./git";
 import { gsdPathMembers, usesGsdPath, type GsdPathMember } from "./gsd-path";
+import { guestKubeFile, syncKubeconfig, type GuestKubeFile, type KubeSync } from "./kube";
 import type { PluginPaths } from "./paths";
 import { repoIdentity } from "./repo";
 import { secretsFor, type StoredSecret } from "./sbx";
@@ -78,6 +80,8 @@ export interface BuiltSpec {
   missingEnv: string[];
   /** Configured variables the sbx client reserves for itself, never forwarded. */
   rejectedEnv: string[];
+  /** The kubeconfig written for the session; null when not prepared. */
+  kube: KubeSync | null;
 }
 
 /** The workspace root is the git toplevel of the agent cwd, or the canonical cwd outside git. */
@@ -186,23 +190,41 @@ function writeAtomic(path: string, data: Buffer | string, mode: number): void {
   renameSync(temp, path);
 }
 
+/** The first line of the plugin's instructions in a sandbox's CLAUDE.md. */
+const INSTRUCTIONS_HEADING = "# Files for the user (paseo-sbx)";
+
 /** Where agents in a sandbox put files you open from Paseo: inside the workspace, hidden from git. */
 export const SANDBOX_OUT_DIR = ".sandbox-out";
 
 /**
  * Tells Claude, through its user memory, where to put the files you will open: the host has only
  * the workspace and the mounted folders at the paths an agent sees, so a file under the guest's
- * `~` or `/tmp` cannot open from a link in the chat.
+ * `~` or `/tmp` cannot open from a link in the chat. With host Kubernetes contexts, it also says
+ * which ones are real clusters of the host and how to keep test clusters apart from them.
  */
-export function sandboxClaudeInstructions(workspace: string): string {
-  return [
-    "# Files for the user (paseo-sbx)",
+export function sandboxClaudeInstructions(workspace: string, kube: Pick<GuestKubeFile, "contexts" | "namespaces" | "current"> | null = null): string {
+  const lines = [
+    INSTRUCTIONS_HEADING,
     "",
     "You run in a Docker Sandboxes VM. The user reads your replies in Paseo on the host, where only this workspace and the mounted folders exist at the paths you see.",
     `Put every file the user should open that is not part of the code you change (reports, reviews, exports, notes) under \`${join(workspace, SANDBOX_OUT_DIR)}/\` (also \`$PASEO_SBX_OUT\`; git ignores it), and link it by its absolute path.`,
     "Files under `~` or `/tmp` exist only in the VM: the user cannot open them.",
     "",
-  ].join("\n");
+  ];
+  if (kube && kube.contexts.length > 0) {
+    const named = kube.contexts.map((name) => (kube.namespaces[name] ? `\`${name}\` (namespace \`${kube.namespaces[name]}\`)` : `\`${name}\``));
+    lines.push(
+      "# Kubernetes (paseo-sbx)",
+      "",
+      `Contexts from the user's host: ${named.join(", ")}. They are real clusters, reached with the host's credentials, which may be cluster-admin: do not create, change or delete anything in them unless the user asks.`,
+      kube.current
+        ? `\`${kube.current}\` is the default context unless this sandbox's own \`~/.kube/config\` sets a current one.`
+        : "There is no default context: pass `--context` to every kubectl and helm command. Without it, kubectl tries `localhost:8080` and fails; that is not a cluster to fix.",
+      `\`KUBECONFIG\` lists this sandbox's own \`~/.kube/config\` first and the host's contexts second, in a file the plugin rewrites at every session: do not edit it. Clusters you create for tests (k3d, kind) go in the sandbox's own file; name them with \`--context\`${kube.current ? ", since the default falls back to a host cluster when they are gone" : ""}.`,
+      "",
+    );
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -230,7 +252,7 @@ export function prepareClaudeConfigDir(
     copies = {};
   }
   const before = JSON.stringify(copies);
-  const instructions = workspace ? sandboxClaudeInstructions(workspace) : null;
+  const instructions = workspace ? sandboxClaudeInstructions(workspace, guestKubeFile(dir)) : null;
   const wanted = new Set(shared);
   if (instructions) wanted.add("CLAUDE.md");
   for (const entry of readdirSync(dir)) {
@@ -272,8 +294,12 @@ export function prepareClaudeConfigDir(
     writeAtomic(target, data, 0o444);
     copies[item] = hash;
   };
-  const withInstructions = (item: string, data: Buffer) =>
-    item === "CLAUDE.md" && instructions ? Buffer.concat([data, Buffer.from(`\n\n${instructions}`)]) : data;
+  const withInstructions = (item: string, data: Buffer | null) =>
+    item === "CLAUDE.md" && instructions
+      ? data === null
+        ? Buffer.from(instructions)
+        : Buffer.concat([data, Buffer.from(`\n\n${instructions}`)])
+      : (data ?? Buffer.alloc(0));
 
   for (const item of shared) {
     const source = join(hostClaudeDir, item);
@@ -284,7 +310,11 @@ export function prepareClaudeConfigDir(
     } catch {
       // Missing on the host: a copy already here stays, so a file being replaced costs nothing.
       if (copies[item] !== undefined) console.warn(`[paseo-sbx] ${source} is missing: ${target} keeps the last copy`);
-      else if (item === "CLAUDE.md" && instructions) place(item, Buffer.from(instructions), "the plugin's instructions");
+      // The plugin's instructions in it stay current: they change with the sandbox's Kubernetes contexts.
+      if (item === "CLAUDE.md" && instructions) {
+        const yours = copies[item] === undefined ? null : lastHostPart(target, copies[item]);
+        if (yours !== undefined) place(item, withInstructions(item, yours), "the plugin's instructions");
+      }
       continue;
     }
     if (sourceIsDir) {
@@ -325,6 +355,23 @@ export async function excludeSandboxOut(workspace: string): Promise<void> {
   mkdirSync(dirname(file), { recursive: true });
   const separator = current === "" || current.endsWith("\n") ? "" : "\n";
   writeFileSync(file, `${current}${separator}# Files agents in Docker Sandboxes leave for you (paseo-sbx)\n${line}\n`);
+}
+
+/**
+ * Your part of the plugin's last copy of CLAUDE.md, before its instructions: null when the copy
+ * held only them or is gone, undefined when it was edited in the sandbox and stays as it is.
+ */
+function lastHostPart(target: string, hash: string): Buffer | null | undefined {
+  let copy: string;
+  try {
+    copy = readFileSync(target, "utf8");
+  } catch {
+    return null;
+  }
+  if (sha256(copy) !== hash) return undefined;
+  const cut = copy.lastIndexOf(`\n\n${INSTRUCTIONS_HEADING}`);
+  if (copy.startsWith(INSTRUCTIONS_HEADING)) return null;
+  return Buffer.from(cut >= 0 ? copy.slice(0, cut) : copy);
 }
 
 /**
@@ -471,11 +518,16 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     .map((mount) => ({ name: relative(home, mount.path), target: mount.path }));
 
   const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
+  let kube: KubeSync | null = null;
   if (input.prepare !== false) {
+    // First, so CLAUDE.md describes the contexts the session gets.
+    kube = await syncKubeconfig({ settings, repoKey, claudeConfigDir, env, home });
     prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared, directory);
     await excludeSandboxOut(directory);
     writeCodexInstructions(join(paths.homesDir, "codex"));
   }
+  // Without preparing, the file the last session got: sessions name it whenever contexts are chosen.
+  const kubeconfig = kube ? kube.file : kubeSelected(settings, repoKey).length > 0 ? join(claudeConfigDir, KUBE_FILE) : null;
 
   const fileValues = readEnvFile(envFilePath(settings, paths, home));
   const forwarded: Record<string, string> = {};
@@ -532,13 +584,15 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     memory: `${memoryMiB(settings, repo, input.hostMemoryBytes ?? totalmem())}m`,
     cpus: repo?.cpus ?? settings.cpus,
     dockerDisk: settings.dockerDiskGiB > 0 ? `${settings.dockerDiskGiB}g` : null,
-    networkAllow: settings.networkAllow,
+    // Clusters on this host are reached at host.docker.internal, which sbx's policy names localhost.
+    networkAllow: [...new Set([...settings.networkAllow, ...(kube?.hostPorts ?? []).map((port) => `localhost:${port}`)])],
     forwardPorts: input.daemonPort ? [...new Set([...settings.forwardPorts, input.daemonPort])] : settings.forwardPorts,
     autoPublish: repo?.autoPublish ?? [],
     mcpServers: mcpAutoLoad(settings, repoKey),
     env: forwarded,
     claudeConfigDir,
     hostClaudeSettings: join(paths.hostClaudeDir, "settings.json"),
+    kubeconfig,
   };
-  return { spec, mounts: sourced, gsdPath, missingEnv, rejectedEnv };
+  return { spec, mounts: sourced, gsdPath, missingEnv, rejectedEnv, kube };
 }

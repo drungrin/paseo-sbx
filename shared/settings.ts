@@ -30,6 +30,16 @@ const repoConfigSchema = z.object({
   mcp: z.record(z.string(), z.boolean()).optional(),
   /** GSD Path integration for this repo, over the global `gsdPath`; unset follows it. */
   gsdPath: z.boolean().optional(),
+  /** Kubernetes contexts for this repo's sandboxes, over the global `kube`; unset follows it. */
+  kube: z.boolean().optional(),
+  /** Host contexts this repo's sandboxes get (true) or skip (false), over `kubeContexts`. */
+  kubeContexts: z.record(z.string(), z.boolean()).optional(),
+  /** The namespace a context defaults to in this repo's sandboxes, over the host kubeconfig's. */
+  kubeNamespaces: z.record(z.string(), z.string()).optional(),
+  /** The context this repo's sandboxes use by default; unset uses the host's current one. */
+  kubeCurrent: z.string().optional(),
+  /** No default context: kubectl without --context fails instead of reaching a host cluster. */
+  kubeNoDefault: z.boolean().optional(),
 });
 export type RepoConfig = z.infer<typeof repoConfigSchema>;
 
@@ -114,6 +124,15 @@ export const sandboxSettingsSchema = z.object({
    * existing and new ones, unless its repository turns them off.
    */
   mcpGlobal: z.array(z.string()).default([]),
+  /**
+   * Contexts from this host's kubeconfig in sandboxes, with their credentials (`server/kube.ts`).
+   * Off by default: the credentials enter the VM, unlike sbx's secrets. A repo's own `kube` wins.
+   */
+  kube: z.boolean().default(false),
+  /** The kubeconfig the contexts come from; empty uses the daemon's `KUBECONFIG`, else `~/.kube/config`. */
+  kubeconfig: z.string().default(""),
+  /** Host contexts every repository's sandboxes get, unless the repository turns them off. */
+  kubeContexts: z.array(z.string()).default([]),
   repos: z.record(z.string(), repoConfigSchema).default({}),
   /** Keyed by the version 1 sandbox key; shown in the Docker Sandboxes screen until resolved. */
   legacyOverrides: z.record(z.string(), legacyOverrideSchema).default({}),

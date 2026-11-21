@@ -12,6 +12,9 @@ import {
   finishMcpSignInRpc,
   getMcpSignInRpc,
   getOperationRpc,
+  kubeHostRpc,
+  kubeRepoRpc,
+  kubeTestRpc,
   listMcpServersRpc,
   listSandboxesRpc,
   listTemplatesRpc,
@@ -305,4 +308,25 @@ export function useMcpSignIn() {
       finish.reset();
     },
   };
+}
+
+export type KubeRepoView = z.infer<(typeof kubeRepoRpc)["output"]>;
+export type KubeTestView = z.infer<(typeof kubeTestRpc)["output"]>;
+
+/** This host's Kubernetes contexts; read with kubectl, so not polled. */
+export function useKubeHost(enabled = true) {
+  const get = useRpc(kubeHostRpc);
+  return useQuery({ queryKey: ["kube-host"], queryFn: () => get({}), enabled });
+}
+
+/** A repository's Kubernetes choices against this host's contexts, and what its sandbox has. */
+export function useKubeRepo(workspaceId: string, directory: string) {
+  const get = useRpc(kubeRepoRpc);
+  return useQuery({ queryKey: ["kube-repo", workspaceId, directory], queryFn: () => get({ workspaceId, directory }), refetchInterval: 30_000 });
+}
+
+/** Calls each context from inside the running sandbox. */
+export function useKubeTest() {
+  const test = useRpc(kubeTestRpc);
+  return useMutation({ mutationFn: (input: { workspaceId: string; directory: string }) => test(input) });
 }

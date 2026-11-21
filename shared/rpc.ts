@@ -243,6 +243,8 @@ export const describeSandboxRpc = defineRpc({
         }),
       ),
     }),
+    /** Host Kubernetes contexts the repository's sandboxes get, from the settings alone. */
+    kube: z.object({ enabled: z.boolean(), contexts: z.array(z.string()) }),
     mcp: z.object({
       /** Servers the plugin loads into the repository's sandboxes. */
       autoLoad: z.array(z.string()),
@@ -478,4 +480,93 @@ export const cancelMcpSignInRpc = defineRpc({
   name: "mcp.sign-in.cancel",
   input: z.object({ id: z.string() }),
   output: z.object({ ok: z.literal(true) }),
+});
+
+const hostContextSchema = z.object({
+  name: z.string(),
+  cluster: z.string(),
+  server: z.string().nullable(),
+  /** Where sandboxes reach it: a cluster on this host at host.docker.internal, others unchanged. */
+  guestServer: z.string().nullable(),
+  /** The namespace the host kubeconfig gives it. */
+  namespace: z.string().nullable(),
+  auth: z.enum(["client-certificate", "token", "token-file", "basic", "exec", "auth-provider", "none"]),
+  /** Why sandboxes cannot use it; null when they can. */
+  unsupported: z.string().nullable(),
+});
+export type HostContextView = z.infer<typeof hostContextSchema>;
+
+const hostKubeSchema = z.object({
+  /** The kubeconfig read, as `KUBECONFIG` takes it. */
+  file: z.string(),
+  /** Why it could not be read; null when it was. */
+  error: z.string().nullable(),
+  /** The host's current context. */
+  current: z.string().nullable(),
+  contexts: z.array(hostContextSchema),
+});
+
+/** This host's Kubernetes contexts, for the plugin settings. */
+export const kubeHostRpc = defineRpc({
+  name: "kube.host",
+  input: z.object({}),
+  output: hostKubeSchema,
+});
+
+/** A repository's Kubernetes choices against this host's contexts, and what its sandbox has. */
+export const kubeRepoRpc = defineRpc({
+  name: "kube.repo",
+  input: workspaceTargetSchema,
+  output: z.object({
+    host: hostKubeSchema,
+    /** The integration for this repo: its own choice, else the plugin setting. */
+    enabled: z.boolean(),
+    global: z.boolean(),
+    /** The repo's own choice; null follows the plugin setting. */
+    repoChoice: z.boolean().nullable(),
+    contexts: z.array(
+      hostContextSchema.extend({
+        /** The sandboxes get it: the repo's choice, else the plugin's list. */
+        on: z.boolean(),
+        /** The repo's own choice; null follows the plugin's list. */
+        choice: z.boolean().nullable(),
+        /** On the plugin's list for every repository. */
+        global: z.boolean(),
+        /** The repo's own namespace for it; null keeps the host's. */
+        repoNamespace: z.string().nullable(),
+      }),
+    ),
+    /** Chosen contexts this host's kubeconfig does not have. */
+    missing: z.array(z.string()),
+    /** Chosen contexts left out, with why. */
+    skipped: z.array(z.object({ name: z.string(), reason: z.string() })),
+    /** The context sessions get by default, unless the sandbox's own kubeconfig sets one. */
+    current: z.string().nullable(),
+    repoCurrent: z.string().nullable(),
+    /** The repo wants no default context: kubectl without --context fails. */
+    noDefault: z.boolean(),
+    sandbox: z.object({
+      name: z.string(),
+      /** sbx's status; null before the sandbox exists. */
+      status: z.string().nullable(),
+      /** The kubeconfig the plugin writes for it. */
+      file: z.string(),
+      /** What that file holds now; null before a session or the Sandbox terminal wrote it. */
+      written: z.object({ contexts: z.array(z.string()), current: z.string().nullable(), writtenAt: z.number() }).nullable(),
+    }),
+  }),
+});
+
+/** Calls each of the plugin's contexts from inside the workspace's running sandbox. */
+export const kubeTestRpc = defineRpc({
+  name: "kube.test",
+  input: workspaceTargetSchema,
+  output: z.object({
+    kubectl: z.string().nullable(),
+    own: z.array(z.string()).nullable(),
+    ownCurrent: z.string().nullable(),
+    current: z.string().nullable(),
+    results: z.array(z.object({ context: z.string(), ok: z.boolean(), detail: z.string() })),
+    error: z.string().nullable(),
+  }),
 });

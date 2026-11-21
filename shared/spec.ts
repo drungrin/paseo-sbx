@@ -62,6 +62,11 @@ export interface SandboxSpec {
    * env file, read at every launch; the file itself stays out of the sandbox. Absent from older plugins.
    */
   hostClaudeSettings?: string;
+  /**
+   * The kubeconfig the plugin writes with the repository's host contexts (`KUBE_FILE`), second in
+   * the guest's `KUBECONFIG` after the sandbox's own; null or absent when it gets none.
+   */
+  kubeconfig?: string | null;
 }
 
 export interface HomeMount {

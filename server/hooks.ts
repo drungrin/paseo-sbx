@@ -46,7 +46,7 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
       console.warn(`[paseo-sbx] could not list sbx secrets: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     });
-    const { spec, missingEnv, rejectedEnv } = await buildSpec({
+    const { spec, missingEnv, rejectedEnv, kube } = await buildSpec({
       settings,
       workspaceId: request.workspaceId,
       cwd: request.cwd,
@@ -76,6 +76,10 @@ export function registerHooks(server: PluginServerContext, deps: ServerDeps): vo
     }
     if (rejectedEnv.length > 0) {
       console.warn(`[paseo-sbx] ${spec.name}: not forwarding reserved ${rejectedEnv.join(", ")}`);
+    }
+    if (kube?.error) console.warn(`[paseo-sbx] ${spec.name}: Kubernetes contexts not updated: ${kube.error}`);
+    for (const skipped of kube?.skipped ?? []) {
+      console.warn(`[paseo-sbx] ${spec.name}: Kubernetes context ${skipped.name} left out: ${skipped.reason}`);
     }
     return {
       ...request,

@@ -345,6 +345,76 @@ describe("buildSpec for GSD Path", () => {
     });
   });
 
+  it("writes the repository's Kubernetes contexts at every session and names them in the spec", async () => {
+    const { home, repo, env, paths } = setup();
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const kubeconfig = {
+      "current-context": "homelab-dev",
+      clusters: [{ name: "dev", cluster: { server: "https://127.0.0.1:6443", "certificate-authority-data": "Q0E=" } }],
+      users: [{ name: "admin", user: { "client-certificate-data": "Q0VSVA==", "client-key-data": "S0VZ" } }],
+      contexts: [{ name: "homelab-dev", context: { cluster: "dev", user: "admin", namespace: "provena" } }],
+    };
+    writeFileSync(join(root, "kubeconfig.json"), JSON.stringify(kubeconfig));
+    writeFileSync(
+      join(bin, "kubectl"),
+      `#!/bin/sh\necho "$KUBECONFIG $*" >"${join(root, "kubectl-call")}"\n[ -n "$FAKE_KUBECTL_FAIL" ] && { echo "connection refused" >&2; exit 1; }\ncat "${join(root, "kubeconfig.json")}"\n`,
+      { mode: 0o755 },
+    );
+    const kubeEnv = { ...env, PATH: `${bin}:${process.env.PATH}` };
+    const repoKey = `git:${realpathSync(repo)}/.git`;
+    const on = sandboxSettingsSchema.parse({
+      kube: true,
+      kubeconfig: "~/kube/config",
+      kubeContexts: ["homelab-dev"],
+      repos: { [repoKey]: { kubeNamespaces: { "homelab-dev": "keycloak" } } },
+    });
+
+    const { spec, kube } = await buildSpec({ settings: on, workspaceId: "wks_1", cwd: repo, paths, env: kubeEnv, home });
+    const file = join(spec.claudeConfigDir, ".paseo-sbx", "kubeconfig.json");
+    expect(spec.kubeconfig).toBe(file);
+    expect(kube).toMatchObject({ file, contexts: ["homelab-dev"], hostPorts: [6443], error: null });
+    expect(readFileSync(join(root, "kubectl-call"), "utf8").trim()).toBe(`${home}/kube/config config view --raw --flatten -o json`);
+    expect(lstatSync(file).mode & 0o777).toBe(0o600);
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    expect(written.clusters[0].cluster).toMatchObject({ server: "https://host.docker.internal:6443", "tls-server-name": "127.0.0.1" });
+    expect(written.contexts[0].context.namespace).toBe("keycloak");
+    expect(spec.networkAllow).toEqual(["**", "localhost:6443"]);
+    const claudeMd = () => readFileSync(join(spec.claudeConfigDir, "CLAUDE.md"), "utf8");
+    expect(claudeMd()).toContain("# Kubernetes (paseo-sbx)");
+    expect(claudeMd()).toContain("Contexts from the user's host: `homelab-dev` (namespace `keycloak`). They are real clusters");
+    expect(claudeMd()).toContain("`homelab-dev` is the default context unless");
+
+    // Without a default context, the file sets none and CLAUDE.md says to pass --context.
+    const noDefault = sandboxSettingsSchema.parse({ ...on, repos: { [repoKey]: { kubeNoDefault: true } } });
+    await buildSpec({ settings: noDefault, workspaceId: "wks_1", cwd: repo, paths, env: kubeEnv, home });
+    expect(JSON.parse(readFileSync(file, "utf8"))["current-context"]).toBeUndefined();
+    expect(claudeMd()).toContain("There is no default context: pass `--context` to every kubectl and helm command.");
+    expect(claudeMd()).toContain("Contexts from the user's host: `homelab-dev` (namespace `provena`).");
+    expect(claudeMd()).not.toContain("falls back");
+
+    // A read-only caller names the file without running kubectl.
+    rmSync(join(root, "kubectl-call"));
+    const described = await buildSpec({ settings: on, workspaceId: "wks_1", cwd: repo, paths, env: kubeEnv, home, prepare: false });
+    expect(described.spec.kubeconfig).toBe(file);
+    expect(described.kube).toBeNull();
+    expect(existsSync(join(root, "kubectl-call"))).toBe(false);
+
+    // kubectl failing on the host keeps the last file sessions got.
+    const failing = await buildSpec({ settings: on, workspaceId: "wks_1", cwd: repo, paths, env: { ...kubeEnv, FAKE_KUBECTL_FAIL: "1" }, home });
+    expect(failing.kube?.error).toContain("connection refused");
+    expect(failing.spec.kubeconfig).toBe(file);
+    expect(existsSync(file)).toBe(true);
+
+    // Turned off for the repository, the file goes and sessions name none.
+    const off = sandboxSettingsSchema.parse({ ...on, repos: { [repoKey]: { kube: false } } });
+    const removed = await buildSpec({ settings: off, workspaceId: "wks_1", cwd: repo, paths, env: kubeEnv, home });
+    expect(removed.spec.kubeconfig).toBeNull();
+    expect(existsSync(file)).toBe(false);
+    expect(removed.spec.networkAllow).toEqual(["**"]);
+    expect(claudeMd()).not.toContain("Kubernetes");
+  });
+
   it("mounts nothing for GSD Path when the setting is off, but still reports the members", async () => {
     const { home, repo, env, paths } = setup();
     const { member } = coordinator(home, repo);
@@ -488,6 +558,30 @@ describe("Claude config dir", () => {
     writeFileSync(join(dir, "CLAUDE.md"), "mine");
     prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"]);
     expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("mine");
+  });
+
+  it("keeps the instructions current in the last copy while your CLAUDE.md is missing", () => {
+    const { hostClaude } = setup();
+    const source = join(hostClaude, "CLAUDE.md");
+    const dir = join(root, "sandbox-config");
+    const kube = { contexts: ["homelab-dev"], namespaces: {}, current: "homelab-dev" };
+    const kubeFile = join(dir, ".paseo-sbx", "kubeconfig.json");
+    writeFileSync(source, "# mine");
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"], "/work/app");
+    rmSync(source);
+    mkdirSync(join(dir, ".paseo-sbx"), { recursive: true });
+    writeFileSync(kubeFile, JSON.stringify({ "current-context": "homelab-dev", contexts: [{ name: "homelab-dev", context: {} }] }));
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"], "/work/app");
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(`# mine\n\n${sandboxClaudeInstructions("/work/app", kube)}`);
+    rmSync(kubeFile);
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"], "/work/app");
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(`# mine\n\n${sandboxClaudeInstructions("/work/app")}`);
+    // Edited in the sandbox while yours is missing: it stays as it is.
+    rmSync(join(dir, "CLAUDE.md"));
+    writeFileSync(join(dir, "CLAUDE.md"), "edited here");
+    writeFileSync(kubeFile, JSON.stringify({ contexts: [{ name: "homelab-dev", context: {} }] }));
+    prepareClaudeConfigDir(dir, hostClaude, ["CLAUDE.md"], "/work/app");
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("edited here");
   });
 
   it("gives CLAUDE.md the plugin's instructions, alone when yours is not shared", () => {

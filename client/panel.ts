@@ -5,7 +5,7 @@ import type { Description } from "./queries";
 
 /** What the workspace panel's tabs share, and what it reads off a sandbox's description. */
 
-export type PanelTab = "overview" | "services" | "template" | "resources" | "mounts" | "variables" | "mcp";
+export type PanelTab = "overview" | "services" | "template" | "resources" | "mounts" | "variables" | "mcp" | "kubernetes";
 
 export interface PanelTabProps {
   data: Description;
@@ -185,6 +185,7 @@ export function panelBadges(data: Description): Record<PanelTab, TabBadge> {
         : data.mcp.autoLoad.length > 0
           ? { label: String(data.mcp.autoLoad.length) }
           : null,
+    kubernetes: data.kube.contexts.length > 0 ? { label: String(data.kube.contexts.length) } : null,
   };
 }
 

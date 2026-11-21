@@ -12,6 +12,9 @@ import {
   finishTemplateRpc,
   getMcpSignInRpc,
   getOperationRpc,
+  kubeHostRpc,
+  kubeRepoRpc,
+  kubeTestRpc,
   listMcpServersRpc,
   listSandboxesRpc,
   listTemplatesRpc,
@@ -59,6 +62,16 @@ import { readSandboxState, type SandboxState } from "./state";
 import { ensureTerminalProfile } from "./terminal-profile";
 import { backfillWorkspaceRecords, rememberWorkspaceSandbox } from "./workspaces";
 import { starshipStatus } from "./starship";
+import { KUBE_FILE, kubeContextOn, kubeEnabled, kubeSelected } from "../shared/kube";
+import {
+  guestKubeFile,
+  guestKubeconfig,
+  hostContexts,
+  hostKubeconfigPath,
+  localHostnames,
+  readHostKubeconfig,
+  testKube,
+} from "./kube";
 import {
   ensureTemplatePrep,
   findTemplate,
@@ -243,8 +256,80 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
         .map((entry) => entry.name),
       operations: operationsFor([spec.name, templatePrepName(repo.key, repo.root)]),
       services: await services(spec.name, spec.claudeConfigDir, Boolean(sandbox)),
+      kube: { enabled: kubeEnabled(settings, spec.repoKey), contexts: kubeSelected(settings, spec.repoKey) },
       mcp: mcpState(spec.name, spec.mcpServers ?? [], sandbox?.status ?? null, state),
     };
+  });
+
+  async function hostKube(settings: SandboxSettings) {
+    const read = await readHostKubeconfig(hostKubeconfigPath(settings, process.env));
+    const local = localHostnames();
+    return {
+      read,
+      local,
+      view: {
+        file: read.file,
+        error: read.error,
+        current: read.doc?.["current-context"] || null,
+        contexts: read.doc ? hostContexts(read.doc, local) : [],
+      },
+    };
+  }
+
+  server.handle(kubeHostRpc, async () => (await hostKube(await deps.readSettings())).view);
+
+  server.handle(kubeRepoRpc, async ({ workspaceId, directory }) => {
+    const settings = await deps.readSettings();
+    const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
+    const { repoKey } = spec;
+    const repo = settings.repos[repoKey];
+    const [{ read, local, view }, sandboxes] = await Promise.all([hostKube(settings), listSandboxes(paths)]);
+    const selected = kubeSelected(settings, repoKey);
+    const built = read.doc
+      ? guestKubeconfig(read.doc, {
+          names: selected,
+          namespaces: repo?.kubeNamespaces,
+          current: repo?.kubeCurrent ?? null,
+          noDefault: repo?.kubeNoDefault ?? false,
+          local,
+          readFile: () => "",
+        })
+      : null;
+    const known = new Set(view.contexts.map((context) => context.name));
+    return {
+      host: view,
+      enabled: kubeEnabled(settings, repoKey),
+      global: settings.kube,
+      repoChoice: repo?.kube ?? null,
+      contexts: view.contexts.map((context) => ({
+        ...context,
+        on: kubeContextOn(settings, repoKey, context.name),
+        choice: repo?.kubeContexts?.[context.name] ?? null,
+        global: settings.kubeContexts.includes(context.name),
+        repoNamespace: repo?.kubeNamespaces?.[context.name] || null,
+      })),
+      missing: read.doc ? selected.filter((name) => !known.has(name)) : [],
+      // A token file is read only when the file is written; here it never fails.
+      skipped: built?.skipped.filter((entry) => known.has(entry.name)) ?? [],
+      current: built?.config["current-context"] ?? null,
+      repoCurrent: repo?.kubeCurrent ?? null,
+      noDefault: repo?.kubeNoDefault ?? false,
+      sandbox: {
+        name: spec.name,
+        status: sandboxes.find((entry) => entry.name === spec.name)?.status ?? null,
+        file: join(spec.claudeConfigDir, KUBE_FILE),
+        written: guestKubeFile(spec.claudeConfigDir),
+      },
+    };
+  });
+
+  server.handle(kubeTestRpc, async ({ workspaceId, directory }) => {
+    const settings = await deps.readSettings();
+    const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
+    const sandbox = (await listSandboxes(paths)).find((entry) => entry.name === spec.name);
+    // sbx exec would start a stopped sandbox: a test never does.
+    if (sandbox?.status !== "running") throw new Error("The sandbox is not running: start an agent or the Sandbox terminal first");
+    return testKube(paths, spec.name, spec.claudeConfigDir);
   });
 
   /** What the sandbox's gateway has against the repository's MCP choices; nothing before it exists. */

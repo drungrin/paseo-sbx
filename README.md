@@ -19,6 +19,7 @@ A panel beside each workspace, opened from its **+** menu, in tabs. Each tab's b
 - **Mounts**: every host folder the sandbox sees, where it comes from and whether it waits for a recreation; the repository's own mounts, added one at a time; and the GSD Path integration: on or off for this repository, whether GSD Path counts the sandbox's sessions, and the members.
 - **Variables**: the host variables forwarded to sessions, whether each has a value, and the repository's own.
 - **MCP**: which MCP servers the repository's sandboxes load, each on for all sandboxes or set for this repository, and whether it is loaded, loading, waiting for the sandbox to start, or failed.
+- **Kubernetes**: which contexts of this host's kubeconfig the repository's sandboxes get, each on for every repository or set for this one, with its namespace, the default context or none, where the sandbox reaches it, and **Test access** from inside the sandbox. Off until you turn it on in the plugin settings or for the repository: the contexts' credentials enter the sandbox.
 
 | Services | Template |
 | --- | --- |

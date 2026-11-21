@@ -15,13 +15,16 @@ import { AGENTS, AGENT_IDS, type AgentId } from "../shared/agents";
 import { sandboxSettings, type IsolationMode, type SandboxSettings } from "../shared/settings";
 import { STARSHIP_DOWNLOAD_MB, STARSHIP_VERSION } from "../shared/starship";
 import { invalidEnvNames, invalidMounts, parseList, parsePortList } from "../shared/spec";
-import { useStarshipStatus, useTemplates } from "./queries";
+import { useKubeHost, useStarshipStatus, useTemplates } from "./queries";
 
 interface Draft {
   enabledAgents: AgentId[];
   allowImageDownloads: boolean;
   routeClaudeAgents: boolean;
   gsdPath: boolean;
+  kube: boolean;
+  kubeconfig: string;
+  kubeContexts: string;
   isolation: IsolationMode;
   memoryPercent: string;
   memoryFloorGiB: string;
@@ -53,12 +56,22 @@ function starshipHint(status: { version: string | null; installing: boolean } | 
   return status?.version ? `${about} Installed: Starship ${status.version}.` : about;
 }
 
+function kubeContextsHint(host: { contexts: { name: string; unsupported: string | null }[] } | undefined, on: boolean): string {
+  const about = "Comma-separated. Every repository's sandboxes get them, unless the repository turns one off.";
+  if (!on || !host) return about;
+  const names = host.contexts.map((context) => (context.unsupported ? `${context.name} (not available)` : context.name));
+  return names.length > 0 ? `${about} On this host: ${names.join(", ")}.` : `${about} This host's kubeconfig has no contexts.`;
+}
+
 function toDraft(values: SandboxSettings): Draft {
   return {
     enabledAgents: values.enabledAgents,
     allowImageDownloads: values.allowImageDownloads,
     routeClaudeAgents: values.routeClaudeAgents,
     gsdPath: values.gsdPath,
+    kube: values.kube,
+    kubeconfig: values.kubeconfig,
+    kubeContexts: values.kubeContexts.join(", "),
     isolation: values.isolation,
     memoryPercent: String(values.memoryPercent),
     memoryFloorGiB: String(values.memoryFloorGiB),
@@ -109,6 +122,9 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     allowImageDownloads: draft.allowImageDownloads,
     routeClaudeAgents: draft.routeClaudeAgents,
     gsdPath: draft.gsdPath,
+    kube: draft.kube,
+    kubeconfig: draft.kubeconfig.trim(),
+    kubeContexts: parseList(draft.kubeContexts),
     isolation: draft.isolation,
     memoryPercent,
     memoryFloorGiB,
@@ -154,6 +170,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
   const [draft, setDraft] = useState(() => toDraft(settings.values));
   const templates = useTemplates();
   const starship = useStarshipStatus(draft.starship);
+  const kubeHost = useKubeHost(draft.kube);
   const templateOptions = [
     { label: "sbx image", value: "" },
     ...(templates.data?.templates ?? [])
@@ -350,6 +367,32 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
         </SettingsCard>
       </SettingsSection>
 
+      <SettingsSection title="Kubernetes">
+        <SettingsCard>
+          <SettingsSwitch
+            label="Kubernetes contexts"
+            hint="Gives sandboxes contexts from this host's kubeconfig, credentials included: agents can do in each cluster whatever those credentials allow. A cluster on this host is reached at host.docker.internal. A repository can turn this on or off, and choose its contexts and namespaces, in its sandbox dashboard under Kubernetes."
+            value={draft.kube}
+            onValueChange={update("kube")}
+          />
+          <SettingsInput
+            label="Contexts for every repository"
+            hint={kubeContextsHint(kubeHost.data, draft.kube)}
+            error={draft.kube ? (kubeHost.data?.error ?? null) : null}
+            initialValue={draft.kubeContexts}
+            placeholder="homelab-dev"
+            onChangeText={update("kubeContexts")}
+          />
+          <SettingsInput
+            label="Host kubeconfig"
+            hint="Where the contexts come from, read with this host's kubectl. Empty uses the daemon's KUBECONFIG, else ~/.kube/config."
+            initialValue={draft.kubeconfig}
+            placeholder="~/.kube/config"
+            onChangeText={update("kubeconfig")}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title="Terminal">
         <SettingsCard>
           <SettingsSwitch
@@ -380,7 +423,7 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
       </SettingsSection>
 
       <SettingsCard>
-        <SettingsRow label="Template, mounts, memory, CPUs and Docker disk apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them; variables reach the next session." />
+        <SettingsRow label="Template, mounts, memory, CPUs and Docker disk apply to sandboxes created afterwards. Recreate a sandbox from its workspace panel to apply them; variables and Kubernetes contexts reach the next session." />
         <SettingsAction
           label={error ?? settings.saveError ?? "Save settings"}
           actionLabel={settings.saving ? "Saving…" : "Save"}

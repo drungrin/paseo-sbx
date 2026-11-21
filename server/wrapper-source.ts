@@ -40,6 +40,8 @@ const HOST_ONLY = new Set([SPEC_ENV, 'PASEO_HOME', 'CLAUDE_ENV_FILE', 'CLAUDE_CO
 // The sbx client reads these itself; a forwarded value would redirect the host-side client.
 const RESERVED = new Set(['PATH', 'HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'DBUS_SESSION_BUS_ADDRESS']);
 const RESERVED_PREFIXES = ['SBX_', 'DOCKER_'];
+// The sandbox's own kubeconfig (GUEST_KUBECONFIG in shared/kube.ts), first in KUBECONFIG.
+const GUEST_KUBECONFIG = '/home/agent/.kube/config';
 const args = process.argv.slice(2);
 
 class WrapperError extends Error {}
@@ -521,8 +523,12 @@ function ensureGuestHelpers(spec, ports) {
     'state=$1',
     'ports=$2',
     'config=$3',
-    'shift 3',
+    'kube=$4',
+    'shift 4',
     'python3 "$dir/seed-claude-settings.py" "$config"',
+    // With host contexts, the sandbox's own kubeconfig must exist: kubectl and k3d write to the
+    // first existing file of KUBECONFIG, which would otherwise be the plugin's.
+    'if [ -n "$kube" ] && [ ! -e "$kube" ]; then mkdir -p "$(dirname "$kube")" && (umask 077 && : >"$kube"); fi',
     'sh "$dir/home-mounts.sh" "$@"',
     'missing=""',
     'if [ -n "$ports" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $ports); fi',
@@ -533,9 +539,8 @@ function ensureGuestHelpers(spec, ports) {
   ].join('\n');
   const output = sbxOk(
     spec,
-    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' '), spec.claudeConfigDir].concat(
-      homeMountArgs(spec),
-    ),
+    ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' '), spec.claudeConfigDir,
+      spec.kubeconfig ? GUEST_KUBECONFIG : ''].concat(homeMountArgs(spec)),
     'guest helpers',
   );
   for (const line of output.split('\n')) if (line.trim()) log(line.trim());
@@ -638,6 +643,11 @@ function guestEnv(spec) {
   }
   env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
   if (spec.agentHome) env[spec.agentHome.env] = spec.agentHome.path;
+  // Host contexts come after the sandbox's own kubeconfig, whose current context wins. A
+  // KUBECONFIG you forward yourself stays.
+  if (spec.kubeconfig && !Object.prototype.hasOwnProperty.call(spec.env, 'KUBECONFIG')) {
+    env.KUBECONFIG = GUEST_KUBECONFIG + ':' + spec.kubeconfig;
+  }
   env.PASEO_SBX_SANDBOX = spec.name;
   // Where agents put the files you open from Paseo: inside the workspace, so the path exists on
   // the host too (the plugin's instructions name it; git ignores it).
