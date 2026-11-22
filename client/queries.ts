@@ -3,8 +3,16 @@ import { usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { z } from "zod";
+import type { CliId } from "../shared/cli-tools";
 import {
   addMcpServerRpc,
+  cliInstallRpc,
+  cliLatestRpc,
+  cliRemoveUnusedRpc,
+  cliRepoRpc,
+  cliTestRpc,
+  cliToolsRpc,
+  cliTokenRpc,
   cancelMcpSignInRpc,
   describeSandboxRpc,
   diskRpc,
@@ -329,4 +337,76 @@ export function useKubeRepo(workspaceId: string, directory: string) {
 export function useKubeTest() {
   const test = useRpc(kubeTestRpc);
   return useMutation({ mutationFn: (input: { workspaceId: string; directory: string }) => test(input) });
+}
+
+export type CliToolsView = z.infer<(typeof cliToolsRpc)["output"]>;
+export type CliRepoView = z.infer<(typeof cliRepoRpc)["output"]>;
+export type CliTestView = z.infer<(typeof cliTestRpc)["output"]>;
+
+/** The additional CLIs' versions and installs: polled fast while one installs. */
+export function useCliTools() {
+  const get = useRpc(cliToolsRpc);
+  return useQuery({
+    queryKey: ["cli-tools"],
+    queryFn: () => get({}),
+    refetchInterval: (query) => (query.state.data?.tools.some((tool) => tool.installing) ? 2000 : 30_000),
+  });
+}
+
+export function useCliInstall() {
+  const install = useRpc(cliInstallRpc);
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: CliId; release: "pinned" | "latest" }) => install(input),
+    onSettled: () => client.invalidateQueries({ queryKey: ["cli-tools"] }),
+  });
+}
+
+/** The vendor's current version of a CLI; read when asked, never polled. */
+export function useCliLatest() {
+  const latest = useRpc(cliLatestRpc);
+  return useMutation({ mutationFn: (id: CliId) => latest({ id }) });
+}
+
+export function useCliRemoveUnused() {
+  const remove = useRpc(cliRemoveUnusedRpc);
+  const client = useQueryClient();
+  return useMutation({ mutationFn: () => remove({}), onSettled: () => client.invalidateQueries({ queryKey: ["cli-tools"] }) });
+}
+
+/** A repository's additional CLIs and what its sandbox has of them. */
+export function useCliRepo(workspaceId: string, directory: string) {
+  const get = useRpc(cliRepoRpc);
+  return useQuery({ queryKey: ["cli-repo", workspaceId, directory], queryFn: () => get({ workspaceId, directory }), refetchInterval: 30_000 });
+}
+
+/** Checks a CLI's sign-in from inside the running sandbox. */
+export function useCliTest() {
+  const test = useRpc(cliTestRpc);
+  return useMutation({ mutationFn: (input: { workspaceId: string; directory: string; id: CliId }) => test(input) });
+}
+
+/** Stores Claude's long-lived token: shared without a workspace, else where the repository keeps credentials. */
+export function useCliToken() {
+  const store = useRpc(cliTokenRpc);
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { target: { workspaceId: string | null; directory: string } | null; token: string }) => store(input),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ["cli-tools"] });
+      void client.invalidateQueries({ queryKey: ["cli-repo"] });
+    },
+  });
+}
+
+/** Saves the plugin-wide settings with `patch` applied. */
+export function useGlobalSettings() {
+  const settings = useSettings(sandboxSettings);
+  const invalidate = useInvalidateAll();
+  async function save(patch: Partial<SandboxSettings>) {
+    if (settings.status !== "ready") throw new Error("settings are not loaded");
+    await saveSettings(settings, { ...settings.values, ...patch });
+    invalidate();
+  }
+  return { settings, save };
 }

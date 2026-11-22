@@ -45,6 +45,7 @@ import {
   type Theme,
   type Tone,
 } from "./kit";
+import { CliToolsSection } from "./cli-tools";
 import { McpServersTab } from "./mcp";
 import {
   useArchiveAgent,
@@ -267,6 +268,7 @@ export function SandboxesScreen({ theme, layout, openSettings }: SandboxesScreen
                 ]}
               >
                 {status.data ? <AgentList status={status.data} theme={theme} compact={compact} /> : null}
+                <CliToolsSection theme={theme} compact={compact} />
               </Frame>
             );
           }

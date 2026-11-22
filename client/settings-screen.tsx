@@ -12,6 +12,7 @@ import {
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { AGENTS, AGENT_IDS, type AgentId } from "../shared/agents";
+import { CLI_IDS, CLI_TOOLS, type CliId, type CliScope } from "../shared/cli-tools";
 import { sandboxSettings, type IsolationMode, type SandboxSettings } from "../shared/settings";
 import { STARSHIP_DOWNLOAD_MB, STARSHIP_VERSION } from "../shared/starship";
 import { invalidEnvNames, invalidMounts, parseList, parsePortList } from "../shared/spec";
@@ -25,6 +26,8 @@ interface Draft {
   kube: boolean;
   kubeconfig: string;
   kubeContexts: string;
+  cliEnabled: CliId[];
+  cliScope: CliScope;
   isolation: IsolationMode;
   memoryPercent: string;
   memoryFloorGiB: string;
@@ -72,6 +75,8 @@ function toDraft(values: SandboxSettings): Draft {
     kube: values.kube,
     kubeconfig: values.kubeconfig,
     kubeContexts: values.kubeContexts.join(", "),
+    cliEnabled: values.cliTools.enabled,
+    cliScope: values.cliTools.scope,
     isolation: values.isolation,
     memoryPercent: String(values.memoryPercent),
     memoryFloorGiB: String(values.memoryFloorGiB),
@@ -125,6 +130,7 @@ function fromDraft(draft: Draft, base: SandboxSettings): SandboxSettings | strin
     kube: draft.kube,
     kubeconfig: draft.kubeconfig.trim(),
     kubeContexts: parseList(draft.kubeContexts),
+    cliTools: { enabled: CLI_IDS.filter((id) => draft.cliEnabled.includes(id)), scope: draft.cliScope },
     isolation: draft.isolation,
     memoryPercent,
     memoryFloorGiB,
@@ -389,6 +395,35 @@ function SettingsForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             initialValue={draft.kubeconfig}
             placeholder="~/.kube/config"
             onChangeText={update("kubeconfig")}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Additional CLIs">
+        <SettingsCard>
+          {CLI_IDS.map((id) => (
+            <SettingsSwitch
+              key={id}
+              label={`${CLI_TOOLS[id].label} (${CLI_TOOLS[id].vendor})`}
+              hint={`In every repository's sandboxes, besides the session's agent${CLI_TOOLS[id].agent ? ` (never in a sandbox whose template runs ${CLI_TOOLS[id].label} itself)` : ""}. Turning it on downloads version ${CLI_TOOLS[id].pinned.version} from ${CLI_TOOLS[id].vendor} into the plugin's folder; Docker Sandboxes → Agents updates it. A repository can turn it on or off in its sandbox dashboard, under CLIs.`}
+              value={draft.cliEnabled.includes(id)}
+              onValueChange={(on) =>
+                setDraft((current) => ({
+                  ...current,
+                  cliEnabled: on ? [...new Set([...current.cliEnabled, id])] : current.cliEnabled.filter((entry) => entry !== id),
+                }))
+              }
+            />
+          ))}
+          <SettingsSelect
+            label="Credentials"
+            hint="Shared: one sign-in per CLI for the sandboxes of every repository that shares, which any agent in them can read; their settings, plugins and history stay each sandbox's own. Per sandbox: each sandbox signs in on its own. A repository can choose for itself; a change applies when its sandbox is recreated."
+            value={draft.cliScope}
+            options={[
+              { label: "Shared", value: "global" },
+              { label: "Per sandbox", value: "sandbox" },
+            ]}
+            onValueChange={update("cliScope")}
           />
         </SettingsCard>
       </SettingsSection>

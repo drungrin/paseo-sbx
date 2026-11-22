@@ -62,6 +62,8 @@ import { readSandboxState, type SandboxState } from "./state";
 import { ensureTerminalProfile } from "./terminal-profile";
 import { backfillWorkspaceRecords, rememberWorkspaceSandbox } from "./workspaces";
 import { starshipStatus } from "./starship";
+import { cliSelected } from "../shared/cli-tools";
+import { saveCliPlan } from "./cli-tools";
 import { KUBE_FILE, kubeContextOn, kubeEnabled, kubeSelected } from "../shared/kube";
 import {
   guestKubeFile,
@@ -194,6 +196,8 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
     const settings = await deps.readSettings();
     const built = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
     const { spec } = built;
+    // The Sandbox terminal reads this record: its shims must exist on disk too.
+    saveCliPlan(built.cli, spec.name);
     rememberWorkspaceSandbox(paths, workspaceId, spec);
     await ensureTerminalProfile(paseo, paths).catch(warnTerminalProfile);
     const [sandboxes, templates, repo] = await Promise.all([
@@ -257,6 +261,7 @@ export function registerHandlers(server: PluginServerContext, deps: ServerDeps):
       operations: operationsFor([spec.name, templatePrepName(repo.key, repo.root)]),
       services: await services(spec.name, spec.claudeConfigDir, Boolean(sandbox)),
       kube: { enabled: kubeEnabled(settings, spec.repoKey), contexts: kubeSelected(settings, spec.repoKey) },
+      cli: { enabled: cliSelected(settings, spec.repoKey) },
       mcp: mcpState(spec.name, spec.mcpServers ?? [], sandbox?.status ?? null, state),
     };
   });

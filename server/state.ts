@@ -13,6 +13,8 @@ export interface SandboxState {
   claudeConfigDir?: string;
   template?: string | null;
   templateImageId?: string | null;
+  /** The sbx kit the sandbox was created with; absent on sandboxes from before it was recorded. */
+  kit?: string;
   memory?: string;
   /** Recorded since the plugin learned them; absent on older sandboxes. */
   cpus?: number;

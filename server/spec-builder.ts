@@ -19,6 +19,7 @@ import {
 import { homedir, totalmem } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { AGENTS, type AgentId } from "../shared/agents";
+import { cliSelected } from "../shared/cli-tools";
 import { KUBE_FILE, kubeSelected } from "../shared/kube";
 import { mcpAutoLoad } from "../shared/mcp";
 import { LEGACY_CLAUDE_SHARED, gsdPathEnabled, type SandboxSettings } from "../shared/settings";
@@ -38,6 +39,7 @@ import {
   type SandboxBinding,
   type SandboxSpec,
 } from "../shared/spec";
+import { planCli, sandboxKit, saveCliPlan, type CliPlan } from "./cli-tools";
 import { canonical, git, localRemotePaths } from "./git";
 import { gsdPathMembers, usesGsdPath, type GsdPathMember } from "./gsd-path";
 import { guestKubeFile, syncKubeconfig, type GuestKubeFile, type KubeSync } from "./kube";
@@ -82,6 +84,8 @@ export interface BuiltSpec {
   rejectedEnv: string[];
   /** The kubeconfig written for the session; null when not prepared. */
   kube: KubeSync | null;
+  /** The sandbox's additional CLIs; null when its repository turned none on. */
+  cli: CliPlan | null;
 }
 
 /** The workspace root is the git toplevel of the agent cwd, or the canonical cwd outside git. */
@@ -464,8 +468,24 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
   const directory = await workspaceDirectory(input.cwd);
   const identity = input.binding ?? sandboxIdentity(settings.isolation, input.workspaceId, directory);
   // An existing sandbox keeps the repo it was created for, whatever cwd a session opens with.
-  const repoKey = readSandboxState(paths, identity.name)?.repoKey ?? (await repoIdentity(input.cwd)).key;
+  const recorded = readSandboxState(paths, identity.name);
+  const repoKey = recorded?.repoKey ?? (await repoIdentity(input.cwd)).key;
   const repo = settings.repos[repoKey];
+  const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
+  // Additional CLIs: the kit decides which are possible (a Claude template never gets an
+  // additional claude), the session's agent which get a shim. The Sandbox terminal has no agent.
+  const cli =
+    cliSelected(settings, repoKey).length > 0
+      ? planCli({
+          paths,
+          settings,
+          repoKey,
+          sandbox: identity.name,
+          claudeConfigDir,
+          kit: await sandboxKit(paths, recorded, templateFor(settings, repoKey), input.agent ?? "claude"),
+          agent: input.agent ?? null,
+        })
+      : null;
 
   const requested: SourcedMount[] = [];
   const add = (entries: readonly string[], source: MountSource) => {
@@ -511,15 +531,17 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     if (target !== shared) requested.push({ path: target, readOnly: true, source: "claude" });
   }
   requested.push({ path: paths.homesDir, readOnly: false, source: "agents" });
+  // Credentials shared between sandboxes: only those of repositories in the global scope get them.
+  if (cli?.mount) requested.push({ path: cli.mount, readOnly: false, source: "cli" });
   const sourced = mergeMounts(requested).filter((mount) => !isWithin(mount.path, directory));
   const mounts = sourced.map(formatMount);
   const homeMounts: HomeMount[] = sourced
     .filter((mount) => HOME_MOUNT_SOURCES.has(mount.source) && mount.path !== home && isWithin(mount.path, home))
     .map((mount) => ({ name: relative(home, mount.path), target: mount.path }));
 
-  const claudeConfigDir = input.binding?.claudeConfigDir ?? join(paths.claudeConfigs, identity.name);
   let kube: KubeSync | null = null;
   if (input.prepare !== false) {
+    saveCliPlan(cli, identity.name);
     // First, so CLAUDE.md describes the contexts the session gets.
     kube = await syncKubeconfig({ settings, repoKey, claudeConfigDir, env, home });
     prepareClaudeConfigDir(claudeConfigDir, paths.hostClaudeDir, settings.claudeShared, directory);
@@ -593,6 +615,7 @@ export async function buildSpec(input: SpecInput): Promise<BuiltSpec> {
     claudeConfigDir,
     hostClaudeSettings: join(paths.hostClaudeDir, "settings.json"),
     kubeconfig,
+    cli: cli?.spec ?? null,
   };
-  return { spec, mounts: sourced, gsdPath, missingEnv, rejectedEnv, kube };
+  return { spec, mounts: sourced, gsdPath, missingEnv, rejectedEnv, kube, cli };
 }

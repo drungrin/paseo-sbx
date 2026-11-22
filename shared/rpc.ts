@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AGENT_IDS } from "./agents";
+import { CLI_IDS, CLI_SCOPES } from "./cli-tools";
 import { MCP_HEADER_PATTERN, MCP_NAME_PATTERN } from "./mcp";
 import { MOUNT_SOURCES } from "./spec";
 
@@ -245,6 +246,8 @@ export const describeSandboxRpc = defineRpc({
     }),
     /** Host Kubernetes contexts the repository's sandboxes get, from the settings alone. */
     kube: z.object({ enabled: z.boolean(), contexts: z.array(z.string()) }),
+    /** Additional CLIs the repository's sandboxes get, from the settings alone. */
+    cli: z.object({ enabled: z.array(z.enum(CLI_IDS)) }),
     mcp: z.object({
       /** Servers the plugin loads into the repository's sandboxes. */
       autoLoad: z.array(z.string()),
@@ -569,4 +572,128 @@ export const kubeTestRpc = defineRpc({
     results: z.array(z.object({ context: z.string(), ok: z.boolean(), detail: z.string() })),
     error: z.string().nullable(),
   }),
+});
+
+const cliIdSchema = z.enum(CLI_IDS);
+
+const cliToolSchema = z.object({
+  id: cliIdSchema,
+  label: z.string(),
+  vendor: z.string(),
+  /** The version this plugin release installs. */
+  pinned: z.string(),
+  /** The version sandboxes run; null before one is installed. */
+  active: z.string().nullable(),
+  installedAt: z.number().nullable(),
+  /** Every version in the plugin's folder, the active one included. */
+  versions: z.array(z.string()),
+  installing: z.boolean(),
+  /** The version being installed. */
+  target: z.string().nullable(),
+  /** Why the last install failed; null when it did not. */
+  error: z.string().nullable(),
+  /** On for every repository (the plugin's list). */
+  enabled: z.boolean(),
+  /** Repositories that turn it on themselves. */
+  repos: z.number(),
+  /** What you run in a workspace's Sandbox terminal to sign in. */
+  login: z.string(),
+  /** How it signs in: a file it writes, or a token you paste (Claude). */
+  credential: z.enum(["file", "token"]),
+  /** A shared credential exists: present, not checked. */
+  globalCredential: z.boolean(),
+  /** Hosts it reaches, for a network policy that is not `**`. */
+  hosts: z.array(z.string()),
+});
+export type CliToolView = z.infer<typeof cliToolSchema>;
+
+/** The additional CLIs: versions in the plugin's folder, installs and shared credentials. */
+export const cliToolsRpc = defineRpc({
+  name: "cli.tools",
+  input: z.object({}),
+  output: z.object({
+    /** This host's architecture, and whether the CLIs were qualified on it. */
+    arch: z.string(),
+    qualified: z.boolean(),
+    /** Where credentials live unless a repository chooses: the plugin setting. */
+    scope: z.enum(CLI_SCOPES),
+    /** The network policy lets sandboxes reach every host. */
+    networkOpen: z.boolean(),
+    /** Some sandbox is running: removing versions waits until none is. */
+    running: z.boolean(),
+    tools: z.array(cliToolSchema),
+  }),
+});
+
+/** Installs a CLI's pinned release or the vendor's current one, in the background. */
+export const cliInstallRpc = defineRpc({
+  name: "cli.install",
+  input: z.object({ id: cliIdSchema, release: z.enum(["pinned", "latest"]) }),
+  output: z.object({ ok: z.literal(true) }),
+});
+
+/** The vendor's current version of a CLI, read from its manifest; nothing is downloaded. */
+export const cliLatestRpc = defineRpc({
+  name: "cli.latest",
+  input: z.object({ id: cliIdSchema }),
+  output: z.object({ version: z.string() }),
+});
+
+/** Removes the versions no CLI uses, while no sandbox runs. */
+export const cliRemoveUnusedRpc = defineRpc({
+  name: "cli.remove-unused",
+  input: z.object({}),
+  output: z.object({ removed: z.array(z.string()) }),
+});
+
+/** A repository's additional CLIs and what its sandbox has of them. */
+export const cliRepoRpc = defineRpc({
+  name: "cli.repo",
+  input: workspaceTargetSchema,
+  output: z.object({
+    /** Where the repository's credentials live: its own choice, else the plugin setting. */
+    scope: z.enum(CLI_SCOPES),
+    repoScope: z.enum(CLI_SCOPES).nullable(),
+    globalScope: z.enum(CLI_SCOPES),
+    /** The sbx kit of the sandbox; its own agent is never an additional CLI. */
+    kit: z.string().nullable(),
+    sandbox: z.object({ name: z.string(), status: z.string().nullable() }),
+    /** The shared credentials folder: needed in the global scope; applied once the sandbox has it. */
+    mount: z.object({ path: z.string(), needed: z.boolean(), applied: z.boolean().nullable() }),
+    clis: z.array(
+      z.object({
+        id: cliIdSchema,
+        label: z.string(),
+        /** The repository's sandboxes get it: its choice, else the plugin's list. */
+        enabled: z.boolean(),
+        /** The repository's own choice; null follows the plugin's list. */
+        choice: z.boolean().nullable(),
+        global: z.boolean(),
+        /** Why this sandbox cannot have it (its kit's own agent); null when it can. */
+        unavailable: z.string().nullable(),
+        active: z.string().nullable(),
+        credential: z.enum(["file", "token"]),
+        /** A credential exists in the repository's scope: present, not checked. */
+        signedIn: z.boolean(),
+        login: z.string(),
+      }),
+    ),
+  }),
+});
+
+/** Runs a CLI's sign-in check inside the workspace's running sandbox. */
+export const cliTestRpc = defineRpc({
+  name: "cli.test",
+  input: workspaceTargetSchema.extend({ id: cliIdSchema }),
+  output: z.object({
+    status: z.enum(["ok", "login", "not-mounted", "quota", "missing", "error"]),
+    detail: z.string(),
+  }),
+});
+
+/** Stores Claude's long-lived token: shared without a workspace, else where its repository keeps credentials. */
+export const cliTokenRpc = defineRpc({
+  name: "cli.token",
+  input: z.object({ target: workspaceTargetSchema.nullable(), token: z.string() }),
+  output: z.object({ scope: z.enum(CLI_SCOPES) }),
 });

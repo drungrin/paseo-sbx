@@ -3,6 +3,7 @@ import { AGENT_IDS, type AgentId } from "../shared/agents";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  CLI_MOUNTS_SOURCE,
   FORWARDER_SOURCE,
   GUEST_AGENT_SOURCE,
   HOME_MOUNTS_SOURCE,
@@ -90,6 +91,7 @@ function binFiles(paths: PluginPaths) {
     { name: "guest-supervisor.py", source: SUPERVISOR_SOURCE, mode: 0o644 },
     { name: "guest-agent.py", source: GUEST_AGENT_SOURCE, mode: 0o644 },
     { name: "home-mounts.sh", source: HOME_MOUNTS_SOURCE, mode: 0o644 },
+    { name: "cli-mounts.sh", source: CLI_MOUNTS_SOURCE, mode: 0o644 },
     { name: "seed-claude-settings.py", source: SEED_SETTINGS_SOURCE, mode: 0o644 },
     { name: "paseo-sbx-shellrc", source: SHELL_RC_SOURCE, mode: 0o644 },
     { name: "starship.toml", source: STARSHIP_CONFIG_SOURCE, mode: 0o644 },

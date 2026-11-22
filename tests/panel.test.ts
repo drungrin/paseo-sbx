@@ -42,6 +42,7 @@ function description(overrides: Partial<Description> = {}): Description {
     operations: [],
     services: { snapshotAt: null, listeners: [], publications: [] },
     kube: { enabled: false, contexts: [] },
+    cli: { enabled: [] },
     mcp: { autoLoad: [], loaded: [], unreadable: null, pendingUnload: [], errors: {} },
     ...overrides,
   };
@@ -158,6 +159,7 @@ describe("panelBadges", () => {
       variables: { label: "1 missing", tone: "warning" },
       mcp: null,
       kubernetes: null,
+      cli: null,
     });
   });
 });

@@ -4,6 +4,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { SandboxSettings } from "../shared/settings";
 import type { SandboxSpec } from "../shared/spec";
 import type { PluginPaths } from "./paths";
+import { saveCliPlan } from "./cli-tools";
 import { buildSpec, prepareClaudeConfigDir } from "./spec-builder";
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -37,10 +38,12 @@ export async function recordWorkspace(
   directory: string,
 ): Promise<void> {
   if (!WORKSPACE_ID.test(workspaceId) || !existsSync(directory)) return;
-  const { spec } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
+  const { spec, cli } = await buildSpec({ settings, workspaceId, cwd: directory, paths, prepare: false });
   if (existsSync(spec.claudeConfigDir)) {
     prepareClaudeConfigDir(spec.claudeConfigDir, paths.hostClaudeDir, settings.claudeShared, spec.workspace);
   }
+  // The terminal's shims and the CLIs' state: the shell launcher only reads the record.
+  saveCliPlan(cli, spec.name);
   rememberWorkspaceSandbox(paths, workspaceId, spec);
 }
 

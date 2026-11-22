@@ -67,6 +67,21 @@ export interface SandboxSpec {
    * the guest's `KUBECONFIG` after the sandbox's own; null or absent when it gets none.
    */
   kubeconfig?: string | null;
+  /**
+   * The session's additional CLIs (`shared/cli-tools.ts`): the folder of their shims, first on the
+   * guest's PATH, the manifest that describes them (`PASEO_SBX_CLI_MANIFEST`), and each CLI's state
+   * folder bound into the guest's home. Null or absent when the session gets none.
+   */
+  cli?: SandboxCli | null;
+}
+
+export interface SandboxCli {
+  path: string;
+  manifest: string;
+  /** The Sandbox terminal's shims and manifest: those of the sandbox's kit, whatever session recorded the spec. */
+  terminal: { path: string; manifest: string };
+  /** `name` under the guest's home is bound to `target`, a folder of the sandbox's own state. */
+  mounts: HomeMount[];
 }
 
 export interface HomeMount {
@@ -194,7 +209,7 @@ export interface MountEntry {
 }
 
 /** Why a sandbox mounts a path; the workspace panel shows it. */
-export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "remote", "claude", "agents"] as const;
+export const MOUNT_SOURCES = ["settings", "repo", "gsd-path", "member", "git", "remote", "claude", "agents", "cli"] as const;
 export type MountSource = (typeof MOUNT_SOURCES)[number];
 
 /** Parses `path` or `path:ro`, expanding a leading `~/`. Returns null for relative paths. */

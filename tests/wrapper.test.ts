@@ -720,6 +720,35 @@ describe("wrapper and the plugin's sandbox operations", () => {
     expect(helpers?.args[4]).toContain('sh "$dir/home-mounts.sh" "$@"');
   });
 
+  it("puts the additional CLIs' shims first on the session's PATH, after finding the agent's own binary", () => {
+    const shims = join(root, "cli-shims");
+    mkdirSync(shims);
+    // A shim named like the session's agent must not replace the agent itself.
+    writeFileSync(join(shims, "claude"), "#!/bin/sh\necho shim\n", { mode: 0o755 });
+    const cli = {
+      path: shims,
+      manifest: join(shims, "manifest.json"),
+      terminal: { path: join(root, "cli-terminal"), manifest: join(root, "cli-terminal", "manifest.json") },
+      mounts: [
+        { name: ".codex", target: "/state/cli/codex/codex" },
+        { name: ".config/muse", target: "/state/cli/muse/config" },
+      ],
+    };
+    const result = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec({ cli })) } });
+    expect(result.status).toBe(0);
+    const guest = JSON.parse(result.stdout);
+    expect(guest.env.PASEO_SBX_CLI_PATH).toBe(shims);
+    expect(guest.env.PASEO_SBX_CLI_MANIFEST).toBe(join(shims, "manifest.json"));
+    expect(guest.env.PATH.split(":")[0]).toBe(shims);
+    const helpers = result.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh");
+    expect(helpers?.args[10]).toBe(".codex\t/state/cli/codex/codex\n.config/muse\t/state/cli/muse/config");
+    expect(helpers?.args[4]).toContain('if [ -n "$cli" ]; then sh "$dir/cli-mounts.sh" "$cli"; fi');
+
+    const none = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec()) } });
+    expect(JSON.parse(none.stdout).env.PASEO_SBX_CLI_PATH).toBeUndefined();
+    expect(none.calls.find((call) => call.args[0] === "exec" && call.args[2] === "sh")?.args[10]).toBe("");
+  });
+
   it("lists the plugin's kubeconfig after the sandbox's own, which the guest helpers create", () => {
     const kubeconfig = join(root, "state", "claude", "paseo-workspace-0000abcd", ".paseo-sbx", "kubeconfig.json");
     const result = run(["--model", "m"], { env: { [SPEC_ENV]: JSON.stringify(spec({ kubeconfig })) } });

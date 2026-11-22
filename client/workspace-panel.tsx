@@ -23,6 +23,7 @@ import {
   tint,
   toneColor,
 } from "./kit";
+import { CliTab } from "./cli-tools";
 import { KubernetesTab } from "./kube";
 import { McpTab } from "./mcp";
 import { panelBadges, panelNeeds, type PanelTab, type PanelTabProps } from "./panel";
@@ -40,6 +41,7 @@ const TAB_LABELS: Record<PanelTab, string> = {
   variables: "Variables",
   mcp: "MCP",
   kubernetes: "Kubernetes",
+  cli: "CLIs",
 };
 
 export function WorkspacePanel({ theme, layout, workspaceId, navigation }: PluginWorkspacePanelProps) {
@@ -116,6 +118,7 @@ export function WorkspacePanel({ theme, layout, workspaceId, navigation }: Plugi
           if (id === "mounts") return <MountsTab {...props} />;
           if (id === "mcp") return <McpTab {...props} />;
           if (id === "kubernetes") return <KubernetesTab {...props} />;
+          if (id === "cli") return <CliTab {...props} />;
           return <VariablesTab {...props} />;
         }}
       />

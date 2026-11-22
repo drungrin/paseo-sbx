@@ -1,10 +1,13 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { cliWanted } from "./shared/cli-tools";
 import { mcpChoicesKey } from "./shared/mcp";
 import { sandboxSettings, type SandboxSettings } from "./shared/settings";
 import { gsdSessionsKey, reconcileGsdSessionDirs } from "./server/gsd-sessions";
 import { registerHandlers } from "./server/handlers";
 import { registerHolds } from "./server/holds";
 import { registerHooks } from "./server/hooks";
+import { registerCliHandlers } from "./server/cli-handlers";
+import { syncCliTools } from "./server/cli-tools";
 import { applyMcpChoices } from "./server/mcp";
 import { cancelAllSignIns } from "./server/mcp-signin";
 import { installBinFiles, pluginPaths } from "./server/paths";
@@ -56,6 +59,7 @@ export default function contribute(server: PluginServerContext) {
   const deps = { paths, readSettings, updateGsdSessions: () => updateGsdSessions() };
   registerHooks(server, deps);
   registerHandlers(server, deps);
+  registerCliHandlers(server, deps);
   const releaseHolds = registerHolds(server, deps);
 
   // A changed MCP choice reaches the existing sandboxes at once, one change after another. The
@@ -69,10 +73,13 @@ export default function contribute(server: PluginServerContext) {
     gsdKey ??= gsdSessionsKey(state.values);
     void updateGsdSessions(state.values);
     void syncStarship(paths, state.values.starship);
+    syncCliTools(paths, cliWanted(state.values));
   });
   const unsubscribe = settings.subscribe((state) => {
     if (state.status !== "ready") return;
     void syncStarship(paths, state.values.starship);
+    // Turning an additional CLI on, for every repository or one, is the consent to download it.
+    syncCliTools(paths, cliWanted(state.values));
     const gsd = gsdSessionsKey(state.values);
     if (gsd !== gsdKey) {
       gsdKey = gsd;

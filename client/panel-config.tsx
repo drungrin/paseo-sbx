@@ -223,6 +223,7 @@ const MOUNT_SOURCE_LABELS: Record<MountSource, string> = {
   git: "Git metadata",
   remote: "Local git remote",
   claude: "Shared Claude config",
+  cli: "Shared CLI credentials",
   agents: "Agents' shared homes",
 };
 

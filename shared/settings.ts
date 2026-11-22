@@ -1,6 +1,7 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AGENT_IDS } from "./agents";
+import { CLI_IDS, CLI_SCOPES } from "./cli-tools";
 
 export const ISOLATION_MODES = ["workspace", "directory"] as const;
 export type IsolationMode = (typeof ISOLATION_MODES)[number];
@@ -40,6 +41,10 @@ const repoConfigSchema = z.object({
   kubeCurrent: z.string().optional(),
   /** No default context: kubectl without --context fails instead of reaching a host cluster. */
   kubeNoDefault: z.boolean().optional(),
+  /** Additional CLIs this repo's sandboxes get (true) or skip (false), over `cliTools.enabled`. */
+  cliTools: z.record(z.string(), z.boolean()).optional(),
+  /** Where this repo's additional CLIs keep their credential, over `cliTools.scope`. */
+  cliScope: z.enum(CLI_SCOPES).optional(),
 });
 export type RepoConfig = z.infer<typeof repoConfigSchema>;
 
@@ -133,6 +138,19 @@ export const sandboxSettingsSchema = z.object({
   kubeconfig: z.string().default(""),
   /** Host contexts every repository's sandboxes get, unless the repository turns them off. */
   kubeContexts: z.array(z.string()).default([]),
+  /**
+   * Additional CLIs (`shared/cli-tools.ts`): agent CLIs sandboxes get besides their session's
+   * agent. Turning one on downloads its pinned build into the plugin's folder, which every sandbox
+   * mounts read-only. `scope` is where the credential lives: `global` shares it between the
+   * sandboxes of every repository that keeps it, `sandbox` keeps it in each sandbox. The CLI's
+   * state is the sandbox's own either way.
+   */
+  cliTools: z
+    .object({
+      enabled: z.array(z.enum(CLI_IDS)).default([]),
+      scope: z.enum(CLI_SCOPES).default("global"),
+    })
+    .default({ enabled: [], scope: "global" }),
   repos: z.record(z.string(), repoConfigSchema).default({}),
   /** Keyed by the version 1 sandbox key; shown in the Docker Sandboxes screen until resolved. */
   legacyOverrides: z.record(z.string(), legacyOverrideSchema).default({}),

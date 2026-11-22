@@ -327,6 +327,8 @@ function ensureSandbox(spec) {
       claudeConfigDir: spec.claudeConfigDir,
       template: spec.template,
       templateImageId: imageId,
+      // The kit decides which additional CLIs the sandbox can have: never its own agent.
+      kit: template ? template.kit : spec.kit,
       memory: spec.memory,
       cpus: spec.cpus,
       dockerDisk: spec.dockerDisk,
@@ -506,6 +508,11 @@ function writeRelays(spec, relays, internalPorts) {
   fs.renameSync(file + '.tmp', file);
 }
 
+// The argument of cli-mounts.sh: one NAME<TAB>TARGET line per state folder of an additional CLI.
+function cliMountLines(spec) {
+  return ((spec.cli && spec.cli.mounts) || []).map(function (mount) { return mount.name + '\t' + mount.target; }).join('\n');
+}
+
 // Arguments for home-mounts.sh: NAME TARGET pairs.
 function homeMountArgs(spec) {
   const pairs = [];
@@ -524,12 +531,14 @@ function ensureGuestHelpers(spec, ports) {
     'ports=$2',
     'config=$3',
     'kube=$4',
-    'shift 4',
+    'cli=$5',
+    'shift 5',
     'python3 "$dir/seed-claude-settings.py" "$config"',
     // With host contexts, the sandbox's own kubeconfig must exist: kubectl and k3d write to the
     // first existing file of KUBECONFIG, which would otherwise be the plugin's.
     'if [ -n "$kube" ] && [ ! -e "$kube" ]; then mkdir -p "$(dirname "$kube")" && (umask 077 && : >"$kube"); fi',
     'sh "$dir/home-mounts.sh" "$@"',
+    'if [ -n "$cli" ]; then sh "$dir/cli-mounts.sh" "$cli"; fi',
     'missing=""',
     'if [ -n "$ports" ]; then missing=$(python3 "$dir/wait-ports.py" --missing $ports); fi',
     'if [ -n "$missing" ]; then nohup python3 "$dir/loopback-forward.py" $missing >>/tmp/paseo-sbx-forward.log 2>&1 & fi',
@@ -540,7 +549,7 @@ function ensureGuestHelpers(spec, ports) {
   const output = sbxOk(
     spec,
     ['exec', spec.name, 'sh', '-c', script, spec.binDir, guestStateDir(spec), ports.join(' '), spec.claudeConfigDir,
-      spec.kubeconfig ? GUEST_KUBECONFIG : ''].concat(homeMountArgs(spec)),
+      spec.kubeconfig ? GUEST_KUBECONFIG : '', cliMountLines(spec)].concat(homeMountArgs(spec)),
     'guest helpers',
   );
   for (const line of output.split('\n')) if (line.trim()) log(line.trim());
@@ -647,6 +656,12 @@ function guestEnv(spec) {
   // KUBECONFIG you forward yourself stays.
   if (spec.kubeconfig && !Object.prototype.hasOwnProperty.call(spec.env, 'KUBECONFIG')) {
     env.KUBECONFIG = GUEST_KUBECONFIG + ':' + spec.kubeconfig;
+  }
+  // Additional CLIs: guest-supervisor.py puts their shims first on the session's PATH, after it
+  // finds the agent's own binary; the manifest describes them to tools that confine them.
+  if (spec.cli) {
+    env.PASEO_SBX_CLI_PATH = spec.cli.path;
+    env.PASEO_SBX_CLI_MANIFEST = spec.cli.manifest;
   }
   env.PASEO_SBX_SANDBOX = spec.name;
   // Where agents put the files you open from Paseo: inside the workspace, so the path exists on
@@ -951,6 +966,11 @@ function shellEnv(spec) {
   const env = guestEnv(Object.assign({}, spec, { agent: 'claude', agentHome: null }));
   delete env.PASEO_SBX_MCP_GATEWAY;
   env.CODEX_HOME = path.join(spec.homesDir, 'codex');
+  // The terminal's additional CLIs are the kit's, whatever session recorded the workspace.
+  if (spec.cli && spec.cli.terminal) {
+    env.PASEO_SBX_CLI_PATH = spec.cli.terminal.path;
+    env.PASEO_SBX_CLI_MANIFEST = spec.cli.terminal.manifest;
+  }
   env.PASEO_SBX_BIN = spec.binDir;
   env.PASEO_SBX_STARSHIP_CONFIG = starshipConfig(spec);
   return env;
@@ -1087,6 +1107,8 @@ export const SHELL_RC_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugi
 for profile in ~/.bash_profile ~/.bash_login ~/.profile; do
   if [ -f "$profile" ]; then . "$profile"; break; fi
 done
+# Additional CLIs, after the login shell has set its PATH.
+if [ -n "$PASEO_SBX_CLI_PATH" ]; then export PATH="$PASEO_SBX_CLI_PATH:$PATH"; fi
 paseo_sbx_prompt() {
   [ -n "$STARSHIP_SHELL" ] && return
   local starship
@@ -1180,6 +1202,30 @@ while [ $# -ge 2 ]; do
 done
 `;
 
+/**
+ * Binds each additional CLI's state folder (in the sandbox's config dir) into the guest's home.
+ * Its argument holds one NAME<TAB>TARGET line per folder, NAME relative to $HOME. Unlike
+ * home-mounts.sh it mounts over whatever is there: the plugin's state wins over what a template
+ * or a run without the bind left. Binds do not survive a VM restart, so this runs at every launch;
+ * the shims refuse to run while a folder is not mounted.
+ */
+export const CLI_MOUNTS_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
+printf '%s\n' "$1" | while IFS='	' read -r name target; do
+  [ -n "$name" ] || continue
+  path="$HOME/$name"
+  if [ ! -d "$target" ]; then echo "additional CLIs: $target is missing; not mounting it at $path"; continue; fi
+  if mountpoint -q "$path" 2>/dev/null; then
+    if [ "$(cat "$path/.paseo-sbx-cli" 2>/dev/null)" != "$(cat "$target/.paseo-sbx-cli" 2>/dev/null)" ]; then
+      echo "additional CLIs: $path is mounted from somewhere else; restart the sandbox to bind its state"
+    fi
+    continue
+  fi
+  [ -L "$path" ] && rm -f "$path"
+  if [ -e "$path" ] && [ ! -d "$path" ]; then echo "additional CLIs: $path is not a folder; not mounting $target there"; continue; fi
+  mkdir -p "$path" && sudo -n mount --bind "$target" "$path" || echo "could not mount $target at $path: it needs passwordless sudo in the sandbox"
+done
+`;
+
 /** Relays each guest loopback port to the same port on the host. */
 export const FORWARDER_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
 # Relays 127.0.0.1:<port> (and ::1 when available) in the sandbox to host.docker.internal:<port>.
@@ -1263,7 +1309,7 @@ else:
  * Every exit path ends with the cleanup, on the main thread.
  */
 export const SUPERVISOR_SOURCE = String.raw`# Written by the paseo-sbx Paseo plugin.
-import json, os, signal, subprocess, sys, threading, time
+import json, os, shutil, signal, subprocess, sys, threading, time
 
 GRACE = float(os.environ.get("PASEO_SBX_STOP_GRACE", "5"))
 
@@ -1290,8 +1336,21 @@ def with_gateway(argv):
     return argv + ["--mcp-config", json.dumps({"mcpServers": {"mcp-gateway": gateway}})]
 
 
+def with_cli_path(argv):
+    # The agent's own binary is found first, on the template's PATH; then the additional CLIs'
+    # shims go first on the PATH it and its tools inherit.
+    cli = os.environ.get("PASEO_SBX_CLI_PATH")
+    if not cli:
+        return argv, None
+    found = shutil.which(argv[0])
+    env = dict(os.environ)
+    env["PATH"] = cli + os.pathsep + env.get("PATH", "")
+    return ([found] + argv[1:] if found else argv), env
+
+
 try:
-    child = subprocess.Popen(with_gateway(sys.argv[1:]), stdin=subprocess.PIPE, start_new_session=True)
+    argv, child_env = with_cli_path(with_gateway(sys.argv[1:]))
+    child = subprocess.Popen(argv, stdin=subprocess.PIPE, start_new_session=True, env=child_env)
 except FileNotFoundError:
     sys.stderr.write("[paseo-sbx] %s is not in this sandbox: its template lacks it. Add it to the template, or pick one built for it\n" % sys.argv[1])
     sys.exit(127)
