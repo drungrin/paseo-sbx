@@ -40,6 +40,21 @@ interface SbxTemplateEntry {
   flavor?: string;
 }
 
+/**
+ * sbx's own images, not templates you saved: its kit images up to 0.49
+ * (`docker/sandbox-templates`), and in 0.54 the image it assembles from a kit and a template for
+ * each sandbox (`sandbox-kit-assembled:<hash>`). Its published kits (`docker.io/sbx/<kit>`, from
+ * 0.51) were not listed in 0.54, but would be its own too.
+ */
+const SBX_IMAGE_REPOSITORIES = [
+  "docker.io/docker/sandbox-templates",
+  "docker.io/library/sandbox-kit-assembled",
+];
+
+function isSbxImage(repository: string): boolean {
+  return SBX_IMAGE_REPOSITORIES.includes(repository) || repository.startsWith("docker.io/sbx/");
+}
+
 export async function listTemplates(paths: PluginPaths): Promise<TemplateInfo[]> {
   const stdout = await runSbxOk(paths, ["template", "ls", "--json"], "sbx template ls");
   return (JSON.parse(stdout || "[]") as SbxTemplateEntry[]).map((entry) => ({
@@ -47,7 +62,7 @@ export async function listTemplates(paths: PluginPaths): Promise<TemplateInfo[]>
     id: entry.id,
     createdAt: entry.created_at ?? null,
     sizeBytes: entry.size ?? null,
-    base: entry.repository === "docker.io/docker/sandbox-templates",
+    base: isSbxImage(entry.repository),
     flavor: entry.flavor ?? null,
   }));
 }

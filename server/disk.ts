@@ -5,7 +5,7 @@ import { vmShims } from "./memory";
 import type { PluginPaths } from "./paths";
 
 /**
- * Where sbx 0.49 keeps a sandbox's disks on this host, an internal detail of it: the VM's Docker
+ * Where sbx (0.49 and 0.54) keeps a sandbox's disks on this host, an internal detail of it: the VM's Docker
  * disk and its agents' state volumes are block images named after the sandbox, and the changes to
  * its filesystem are a containerd snapshot's `rwlayer.img`. Anything unexpected reads as unknown.
  */

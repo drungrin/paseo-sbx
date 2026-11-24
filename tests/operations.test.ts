@@ -14,7 +14,7 @@ import { publishPort, readListeners, unpublishPort } from "../server/ports";
 import { listSandboxes, prepareSandbox, shellCommand, stopSandbox } from "../server/sbx";
 import { buildSpec } from "../server/spec-builder";
 import { processStart, readSandboxState, writeSandboxState } from "../server/state";
-import { ensureTemplatePrep, finishTemplatePrep, removeTemplate, saveTemplate } from "../server/templates";
+import { ensureTemplatePrep, finishTemplatePrep, listTemplates, removeTemplate, saveTemplate } from "../server/templates";
 import { installFakeSbx, type FakeSbx } from "./fake-sbx";
 
 let root: string;
@@ -260,6 +260,21 @@ describe("templates", () => {
     writeFileSync(join(leases, String(process.pid)), JSON.stringify({ pid: process.pid, start: processStart(process.pid), agentId: null }));
     await expect(saveTemplate(paths, name, "app:v1")).rejects.toThrow("session(s) still run in it");
     expect(fake.calls().some((call) => call.args[0] === "stop")).toBe(false);
+  });
+
+  it("tells sbx's own images, from 0.49 and 0.54, apart from the templates you saved", async () => {
+    fake.setState({
+      templates: [
+        { id: "a1", repository: "docker.io/docker/sandbox-templates", tag: "claude-code-docker" },
+        { id: "a2", repository: "docker.io/library/sandbox-kit-assembled", tag: "5e0e026dda190dee" },
+        { id: "a3", repository: "docker.io/sbx/claude", tag: "latest" },
+        { id: "b1", repository: "docker.io/library/app", tag: "v1" },
+        // A saved template whose name only resembles sbx's.
+        { id: "b2", repository: "docker.io/library/sandbox-kit-assembled-app", tag: "v1" },
+      ],
+    });
+    const templates = await listTemplates(paths);
+    expect(templates.filter((template) => !template.base).map((template) => template.id)).toEqual(["b1", "b2"]);
   });
 
   it("will not remove a template that settings still use", async () => {

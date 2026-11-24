@@ -22,11 +22,11 @@ afterEach(() => {
 });
 
 /** A fake /proc entry for a VM shim whose task state directory names `hostname`. */
-function shim(pid: number, stateDir: string, hostname: string | null, rssKiB: number) {
+function shim(pid: number, stateDir: string, hostname: string | null, rssKiB: number, binary = "/usr/libexec/containerd-shim-nerdbox-v1") {
   const dir = join(proc, String(pid));
   mkdirSync(dir);
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(join(dir, "cmdline"), `/usr/libexec/containerd-shim-nerdbox-v1\0-namespace\0docker\0-id\0abc\0`);
+  writeFileSync(join(dir, "cmdline"), `${binary}\0-namespace\0docker\0-id\0abc\0`);
   writeFileSync(join(dir, "status"), `Name:\tcontainerd-shim\nVmRSS:\t  ${rssKiB} kB\n`);
   symlinkSync(stateDir, join(dir, "cwd"));
   if (hostname !== null) writeFileSync(join(stateDir, "config.json"), JSON.stringify({ hostname }));
@@ -45,6 +45,16 @@ describe("VM memory", () => {
     writeFileSync(join(other, "cmdline"), "node\0server.js\0");
 
     expect(vmMemoryMiB(paths, proc)).toEqual(new Map([["paseo-app-0badc0de", 1270]]));
+  });
+
+  it("finds the VMs sbx 0.54 runs as docker-docklet, and nothing that merely names one", () => {
+    const tasks = join(paths.stateHome, "sandboxes", "sandboxes", "sandboxd", "containerd", "state", "task");
+    shim(201, join(tasks, "a"), "paseo-app-0badc0de", 1_447_528, "/usr/libexec/docker-docklet");
+    // A command whose arguments name the VM process is not one.
+    shim(202, join(tasks, "b"), "paseo-other-0badc0de", 1_000, "/usr/bin/pgrep");
+    writeFileSync(join(proc, "202", "cmdline"), "/usr/bin/pgrep\0-f\0docker-docklet\0");
+
+    expect(vmMemoryMiB(paths, proc)).toEqual(new Map([["paseo-app-0badc0de", 1414]]));
   });
 
   it("returns nothing where /proc cannot be read", () => {

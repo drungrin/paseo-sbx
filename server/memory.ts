@@ -60,10 +60,16 @@ export interface VmShim {
 }
 
 /**
- * The running VMs of the Paseo instance, read without entering them. sbx 0.49 runs a VM as a
- * `containerd-shim-nerdbox-v1` process whose working directory is the task's state directory, and
- * that directory's `config.json` names the sandbox in `hostname`. An internal detail of sbx:
- * anything unexpected leaves the sandbox out, shown as unknown.
+ * The process that runs each VM: `containerd-shim-nerdbox-v1` up to sbx 0.49, `docker-docklet`
+ * from sbx 0.54 on (0.50 to 0.53 not checked).
+ */
+const VM_PROCESS = /(?:^|\/)(?:containerd-shim-nerdbox-v1|docker-docklet)$/;
+
+/**
+ * The running VMs of the Paseo instance, read without entering them. sbx runs a VM as a process
+ * (`VM_PROCESS`) whose working directory is the task's state directory, and that directory's
+ * `config.json` names the sandbox in `hostname`. An internal detail of sbx, the same in 0.49 and
+ * 0.54: anything unexpected leaves the sandbox out, shown as unknown.
  */
 export function vmShims(paths: PluginPaths, procRoot = "/proc"): VmShim[] {
   const shims: VmShim[] = [];
@@ -75,7 +81,7 @@ export function vmShims(paths: PluginPaths, procRoot = "/proc"): VmShim[] {
   }
   for (const pid of pids) {
     const cmdline = readText(join(procRoot, pid, "cmdline"));
-    if (!cmdline?.includes("containerd-shim-nerdbox-v1")) continue;
+    if (!cmdline || !VM_PROCESS.test(cmdline.split("\0")[0])) continue;
     let cwd: string;
     try {
       cwd = readlinkSync(join(procRoot, pid, "cwd"));
